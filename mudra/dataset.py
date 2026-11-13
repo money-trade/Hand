@@ -217,6 +217,96 @@ def split_dataset(ds, sources, ratios=config.SPLIT, seed=config.SEED):
 
 
 # ======================================================================
+# ภาพ "ไม่อยู่ในฐานข้อมูล" (unknown) — ใช้ทดสอบว่าระบบปฏิเสธได้จริง (ไม่ใช้ตั้งเกณฑ์)
+# ======================================================================
+# กรอบบริเวณคอ/คางในภาพดิบ (ไม่มีมืออยู่ในกรอบ) — จำลองกรณีใบหน้า/คอเข้ามาในกรอบ ROI
+NECK_ROIS = {"abhaya.jpg": (430, 0, 900, 200), "mudra_R.jpg": (450, 0, 880, 140),
+             "chin.jpg": (520, 0, 960, 150)}
+
+
+def synthetic_blob(rng, size=config.WORK_SIZE):
+    """รูปทรงสีผิวแบบสุ่ม: ฝ่ามือวงรี + นิ้วสุ่มจำนวน/ทิศทาง (เช่น แบมือ กางนิ้ว กำมือ) บนพื้นเทา"""
+    yy, xx = np.mgrid[0:size, 0:size].astype(np.float32)
+    img = np.full((size, size, 3), rng.uniform(60, 200), np.float32)
+    img += rng.normal(0, 6, img.shape).astype(np.float32)
+    cx, cy = rng.uniform(0.3, 0.7, 2) * size
+    a, b = rng.uniform(0.11, 0.27, 2) * size
+    t = rng.uniform(0, np.pi)
+    u = (xx - cx) * np.cos(t) + (yy - cy) * np.sin(t)
+    v = -(xx - cx) * np.sin(t) + (yy - cy) * np.cos(t)
+    mask = (u / a) ** 2 + (v / b) ** 2 <= 1
+    for _ in range(int(rng.integers(0, 6))):                      # นิ้ว = แท่งยาวมีความหนา
+        phi = rng.uniform(0, 2 * np.pi)
+        x0, y0 = cx + 0.8 * a * np.cos(phi), cy + 0.8 * b * np.sin(phi)
+        length = rng.uniform(0.12, 0.35) * size
+        dx, dy = length * np.cos(phi), length * np.sin(phi)
+        s = np.clip(((xx - x0) * dx + (yy - y0) * dy) / (length * length), 0, 1)
+        dist2 = (xx - (x0 + s * dx)) ** 2 + (yy - (y0 + s * dy)) ** 2
+        mask |= dist2 <= (rng.uniform(0.03, 0.07) * size) ** 2
+    skin = np.array([rng.uniform(170, 230), rng.uniform(120, 165), rng.uniform(90, 135)], np.float32)
+    shade = 1 + 0.08 * rng.normal(0, 1, (size, size)).astype(np.float32)
+    img[mask] = skin * shade[mask][:, None]
+    return np.clip(img, 0, 255)
+
+
+def make_unknown_features(sources, skin_model, n_per_type=60, seed=config.SEED):
+    """
+    สร้างฟีเจอร์ของภาพที่ "ไม่ใช่ปางใดในฐานข้อมูล" 4 แบบ
+      neck    : คอ/คาง (ใบหน้าเข้ามาในกรอบ)
+      partial : เห็นมือไม่ครบ — เห็นแต่ข้อมือ/แขน หรือซูมเห็นแค่ส่วนของนิ้ว
+      blob    : รูปทรงสีผิวสุ่ม (ท่ามือแปลก ๆ แบมือ กางนิ้ว)
+      mix     : ครึ่งซ้ายจากปางหนึ่ง + ครึ่งขวาจากอีกปาง (ท่าที่ไม่มีอยู่จริง ใกล้เคียงข้อมูลมาก)
+    """
+    from .image_ops import resize_bilinear
+    rng = np.random.default_rng(seed)
+    raw = [s for s in sources if s.kind == "raw" and s.roi is not None]
+    out = {k: [] for k in ("neck", "partial", "blob", "mix")}
+
+    def add(kind, work):
+        hand = extract_hand(work, skin_model)
+        if hand.found:
+            out[kind].append(extract_features(hand))
+
+    neck_src = []
+    for s in raw:
+        if s.path.name in NECK_ROIS:                         # ใช้ภาพต้นฉบับ (ไม่ลบส่วนคอ)
+            img = read_image_rgb(s.path)
+            neck_src.append(prepare_source(img, NECK_ROIS[s.path.name]))
+    for i in range(n_per_type):
+        if neck_src:
+            small, roi = neck_src[i % len(neck_src)]
+            aug = random_augmentation(rng, 0.6)
+            add("neck", photometric(make_working(small, roi, aug), aug, rng))
+
+        s = raw[i % len(raw)]
+        small, (x1, y1, x2, y2) = prepare_source(s.load(), s.roi)
+        w, h = x2 - x1, y2 - y1
+        if rng.random() < 0.5:                                # เลื่อนกรอบลงล่าง: เห็นแต่ข้อมือ/แขน
+            dy = rng.uniform(0.55, 0.75) * h
+            roi = (x1, y1 + dy, x2, y2 + dy)
+        else:                                                 # ซูมเข้าไปเห็นแค่บางส่วนของมือ
+            f = rng.uniform(0.3, 0.45)
+            px, py = x1 + rng.uniform(0, 1 - f) * w, y1 + rng.uniform(0, 1 - f) * h
+            roi = (px, py, px + f * w, py + f * h)
+        aug = random_augmentation(rng, 0.6)
+        add("partial", photometric(make_working(small, roi, aug), aug, rng))
+
+        add("blob", synthetic_blob(rng))
+
+        a, b = rng.choice(len(raw), 2, replace=False)
+        halves = []
+        for src in (raw[a], raw[b]):
+            sm, r = prepare_source(src.load(), src.roi)
+            aug = random_augmentation(rng, 0.6)
+            halves.append(resize_bilinear(photometric(make_working(sm, r, aug), aug, rng),
+                                          config.WORK_SIZE, config.WORK_SIZE))
+        half = config.WORK_SIZE // 2
+        add("mix", np.concatenate([halves[0][:, :half], halves[1][:, half:]], axis=1))
+
+    return {k: np.asarray(v, np.float32) for k, v in out.items() if v}
+
+
+# ======================================================================
 # ภาพตัวอย่างสำหรับ EDA (ดูผลการแบ่งส่วนมือ)
 # ======================================================================
 def render_segmentation_preview(sources, skin_model, tile=160):

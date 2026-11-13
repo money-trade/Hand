@@ -24,9 +24,12 @@ def main():
     ap = argparse.ArgumentParser(description="ทำนายปางพระพุทธรูปจากไฟล์รูปท่ามือ")
     ap.add_argument("images", nargs="+", help="ไฟล์รูป")
     ap.add_argument("--roi", type=float, nargs=4, metavar=("X1", "Y1", "X2", "Y2"))
+    ap.add_argument("--sensitivity", type=float, default=1.0,
+                    help="ตัวคูณเกณฑ์ยอมรับของด่าน open-set (>1 ผ่อนปรน, <1 เข้มงวด)")
     a = ap.parse_args()
 
     rec = MudraRecognizer()
+    rec.sensitivity = a.sensitivity
     nlg = ThaiTextGenerator(load_mudra_info())
     ann = json.loads(config.ANNOTATION_FILE.read_text(encoding="utf-8"))
     ann = {it["file"]: it for it in ann["images"]}
@@ -45,8 +48,10 @@ def main():
             roi = (0, 0, w, h)
         res = rec.analyze(img, roi)
         print(f"\n{p.name}")
-        if not res["found"]:
-            print("  " + nlg.describe(None, 0, state="no_hand")["sentence"])
+        if res["novelty"] is not None:
+            print(f"  ระยะห่างจากฐานข้อมูล {res['novelty']:.2f} (เกณฑ์ {rec.sensitivity:.2f})")
+        if res["status"] != "known":
+            print("  " + nlg.describe(None, 0, state=res["status"], reason=res["reason"])["sentence"])
             continue
         order = res["probs"].argsort()[::-1]
         d = nlg.describe(res["label"], res["confidence"], rec.class_names[order[1]])

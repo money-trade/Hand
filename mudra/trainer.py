@@ -24,13 +24,14 @@ import numpy as np
 
 from . import config
 from .dataset import (build_feature_dataset, class_names_from_info, load_sources,
-                      make_working, photometric, prepare_source, random_augmentation,
-                      render_segmentation_preview, split_dataset)
+                      make_unknown_features, make_working, photometric, prepare_source,
+                      random_augmentation, render_segmentation_preview, split_dataset)
 from .features import extract_features
 from .image_ops import draw_rect
 from .io_utils import write_image_rgb
 from .metrics import evaluate, format_confusion, format_report
 from .models import KNNClassifier, NeuralNetClassifier
+from .novelty import NoveltyDetector
 from .pipeline import save_model
 from .preprocessing import PCA, StandardScaler
 from .segmentation import SkinModel, extract_hand
@@ -63,6 +64,21 @@ def draw_learning_curve(history, path, w=640, h=360):
             for dx in (-1, 0, 1):
                 img[np.clip(py + dy, 0, h - 1), np.clip(px + dx, 0, w - 1)] = color
     write_image_rgb(path, img)
+
+
+def aug_features(sources, skin, strength, n_per_source, seed):
+    """สร้างฟีเจอร์จากภาพที่บิดด้วยความแรง strength (seed แยกจากตอนเทรน)"""
+    rng = np.random.default_rng(seed)
+    X, y = [], []
+    for s in sources:
+        small, roi = prepare_source(s.load(), s.roi)
+        for _ in range(n_per_source):
+            aug = random_augmentation(rng, strength)
+            hand = extract_hand(photometric(make_working(small, roi, aug), aug, rng), skin)
+            if hand.found:
+                X.append(extract_features(hand))
+                y.append(s.label)
+    return np.asarray(X, np.float32), y
 
 
 def run_training(aug_raw=config.AUG_PER_RAW_IMAGE, aug_collected=config.AUG_PER_COLLECTED,
@@ -179,6 +195,52 @@ def run_training(aug_raw=config.AUG_PER_RAW_IMAGE, aug_collected=config.AUG_PER_
         report.append("\nLearning curve (น้ำเงิน = train loss, ส้ม = validation loss):\n\n"
                       "![learning curve](learning_curve.png)")
 
+    # ------------------------------------------------------------------ 10b
+    step("10b. Open-set Recognition (ปฏิเสธท่าที่ไม่อยู่ในฐานข้อมูล)")
+
+    def project(Xf):
+        Xs = scaler.transform(Xf)
+        return pca.transform(Xs), pca.reconstruction_error(Xs)
+
+    Eva = pca.reconstruction_error(scaler.transform(Xva))
+    novelty = NoveltyDetector(seed=seed).fit(Ztr, ytr, Zva, yva, Eva)
+    Xh, _ = aug_features(raw_sources, skin, config.NOVELTY_CAL_STRENGTH, 30, seed + 2000)
+    Zh, Eh = project(Xh)
+    novelty.calibrate(np.concatenate([Zva, Zh]), np.concatenate([Eva, Eh]))
+    log(f"  เกณฑ์ sqrt(d x r) <= {novelty.thr_:.3f}  (k={novelty.k}, ตัวอย่างอ้างอิง {len(novelty.refs_)})")
+
+    def accept_rate(Xf):
+        if len(Xf) == 0:
+            return float("nan")
+        Z, E = project(Xf)
+        return float(novelty.is_known(Z, E).mean())
+
+    unknown = make_unknown_features(sources, skin, n_per_type=60, seed=seed + 3000)
+    names = {"neck": "คอ/คาง (ใบหน้าเข้ามาในกรอบ)", "partial": "เห็นมือไม่ครบ / ข้อมือ / แขน",
+             "blob": "รูปทรงมือสุ่ม (แบมือ กางนิ้ว ฯลฯ)", "mix": "ครึ่งซ้าย-ขวาต่างปาง (ใกล้เคียงข้อมูลมาก)"}
+    rows = ["| ชุดภาพ | ชนิด | จำนวน | ยอมรับ (ส่งให้โมเดล) | ปฏิเสธ (ไม่คำนวณ) |", "|---|---|---:|---:|---:|"]
+    open_set = {"threshold": novelty.thr_, "unknown_reject": {}}
+    for label, Xf in [("Validation", Xva), ("Test", Xte)]:
+        r = accept_rate(Xf)
+        open_set[label.lower() + "_accept"] = r
+        rows.append(f"| {label} | ท่าที่รู้จัก | {len(Xf)} | {r * 100:.1f}% | {(1 - r) * 100:.1f}% |")
+        log(f"  {label:10s} (รู้จัก)     ยอมรับ {r * 100:5.1f}%")
+    for k, Xf in unknown.items():
+        r = accept_rate(Xf)
+        open_set["unknown_reject"][k] = 1 - r
+        rows.append(f"| {names[k]} | ไม่อยู่ในฐานข้อมูล | {len(Xf)} | {r * 100:.1f}% | **{(1 - r) * 100:.1f}%** |")
+        log(f"  {k:10s} (ไม่รู้จัก) ปฏิเสธ {(1 - r) * 100:5.1f}%")
+    report.append(
+        "โมเดล softmax ต้องเลือก 1 ใน 7 ปางเสมอ จึงเพิ่มด่านตรวจ **ก่อน** ส่งให้โมเดลจำแนก "
+        "ภาพที่ไม่ผ่านจะไม่ถูกนำไปคำนวณ\n\n"
+        "- `d` = ระยะ kNN (k=5) ถึงกลุ่มของปางที่ใกล้ที่สุด ÷ ระยะปกติของปางนั้น (ในปริภูมิ PCA)\n"
+        "- `r` = reconstruction error ของ PCA ÷ ค่าปกติ\n"
+        f"- คะแนน = √(d·r) ÷ T, เกณฑ์ T = เปอร์เซ็นไทล์ที่ {config.NOVELTY_PERCENTILE:g} ของภาพที่รู้จัก "
+        f"(validation + ภาพบิดแรง ×{config.NOVELTY_CAL_STRENGTH}) = {novelty.thr_:.3f}\n"
+        "- ตั้งเกณฑ์จากภาพที่รู้จักเท่านั้น — ภาพ unknown ด้านล่างใช้ทดสอบอย่างเดียว\n"
+        "- เฟรมเดี่ยวที่ถูกปฏิเสธผิดจะถูก HMM กลบ ต้องถูกปฏิเสธต่อเนื่องจึงจะแสดงว่า \"ไม่พบในฐานข้อมูล\"\n\n"
+        + "\n".join(rows))
+
     # ------------------------------------------------------------------ 11
     step("11. Model Evaluation (Test set)")
     te = evaluate(yte, best.predict(Zte), nc)
@@ -209,26 +271,21 @@ def run_training(aug_raw=config.AUG_PER_RAW_IMAGE, aug_collected=config.AUG_PER_
         report.append("\n### ภาพจากกล้องจริง (test, แบ่งระดับภาพต้นทาง)\n\n" + format_report(real, class_names))
 
     # Robustness test: บิดภาพแรงกว่าตอนเทรน (out-of-distribution) ด้วย seed ใหม่
-    rob_rows = ["| ระดับการบิดภาพ | ความหมาย | Accuracy | ความมั่นใจเฉลี่ย |", "|---|---|---:|---:|"]
+    rob_rows = ["| ระดับการบิดภาพ | ความหมาย | Accuracy | ความมั่นใจเฉลี่ย | ผ่านด่าน open-set |",
+                "|---|---|---:|---:|---:|"]
     robustness = {}
     for strength, desc in [(1.0, "เท่าตอนเทรน"), (1.5, "แรงกว่า 1.5 เท่า (หมุน ±27°)"),
                            (2.0, "แรงกว่า 2 เท่า (หมุน ±36°)")]:
-        rng = np.random.default_rng(seed + 1000)
-        yt, yp, cf = [], [], []
-        for s in raw_sources:
-            small, roi = prepare_source(s.load(), s.roi)
-            for _ in range(30):
-                aug = random_augmentation(rng, strength)
-                hand = extract_hand(photometric(make_working(small, roi, aug), aug, rng), skin)
-                if hand.found:
-                    p = best.predict_proba(pca.transform(scaler.transform(extract_features(hand)[None])))[0]
-                    yt.append(class_names.index(s.label))
-                    yp.append(int(p.argmax()))
-                    cf.append(float(p.max()))
-        acc = float(np.mean(np.array(yt) == np.array(yp))) if yt else 0.0
+        Xr, yr = aug_features(raw_sources, skin, strength, 30, seed + 1000)
+        Zr, Er = project(Xr)
+        P = best.predict_proba(Zr)
+        acc = float(np.mean(P.argmax(1) == np.array([class_names.index(l) for l in yr])))
+        acc_known = float(novelty.is_known(Zr, Er).mean())
         robustness[str(strength)] = acc
-        log(f"  robustness x{strength}: acc {acc * 100:.1f}%  (mean conf {np.mean(cf):.2f})")
-        rob_rows.append(f"| x{strength} | {desc} | {acc * 100:.1f}% | {np.mean(cf) * 100:.0f}% |")
+        log(f"  robustness x{strength}: acc {acc * 100:.1f}%  (mean conf {P.max(1).mean():.2f}, "
+            f"ผ่านด่าน open-set {acc_known * 100:.1f}%)")
+        rob_rows.append(f"| x{strength} | {desc} | {acc * 100:.1f}% | {P.max(1).mean() * 100:.0f}% | "
+                        f"{acc_known * 100:.1f}% |")
     report.append("\n### Robustness test (บิดภาพแรงกว่าตอนเทรน ด้วย seed ใหม่)\n\n" + "\n".join(rob_rows))
 
     report.append("\n> **ข้อควรระวัง:** Raw Data มีเพียงปางละ 1 ภาพ ชุด test ที่มาจากการ augment ภาพเดียวกัน "
@@ -238,7 +295,7 @@ def run_training(aug_raw=config.AUG_PER_RAW_IMAGE, aug_collected=config.AUG_PER_
     # ------------------------------------------------------------------ 12
     step("12. Model Deployment (บันทึกโมเดล)")
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    save_model(config.MODEL_FILE, class_names, scaler, pca, best, mtype)
+    save_model(config.MODEL_FILE, class_names, scaler, pca, best, mtype, novelty)
     config.MODEL_HISTORY_DIR.mkdir(parents=True, exist_ok=True)
     shutil.copy2(config.MODEL_FILE, config.MODEL_HISTORY_DIR / f"mudra_model_{stamp}.npz")
     meta = {
@@ -249,6 +306,7 @@ def run_training(aug_raw=config.AUG_PER_RAW_IMAGE, aug_collected=config.AUG_PER_
         "test": {k: te[k] for k in ("accuracy", "macro_f1")},
         "real_test": None if real is None else {k: real[k] for k in ("accuracy", "macro_f1")},
         "robustness": robustness,
+        "open_set": open_set,
         "candidates": [{"model": m.name, "val_acc": va["accuracy"], "val_f1": va["macro_f1"],
                         "train_seconds": dt} for _, m, va, dt in results],
         "train_seconds": time.time() - t_start,

@@ -42,19 +42,26 @@ class HMMFilter:
     def reset(self):
         self.alpha = np.full(self.n, 1.0 / self.n)
 
-    def emission(self, class_probs):
-        """แปลงผลจากโมเดลภาพเป็นความน่าจะเป็นของการสังเกต (รวมสถานะไม่มีมือ)"""
+    def emission(self, class_probs, unknown=False):
+        """
+        แปลงผลจากโมเดลภาพเป็นความน่าจะเป็นของการสังเกต (รวมสถานะไม่มีมือ)
+          unknown=True : พบมือแต่ไม่อยู่ในฐานข้อมูล -> หลักฐาน "อ่อน" ว่าไม่มีท่า (ไม่ได้รันโมเดลจำแนก)
+                         เฟรมเดี่ยวที่ถูกปฏิเสธผิดจึงไม่ทำให้ผลกระพริบ ต้องปฏิเสธต่อเนื่อง ~2 เฟรมขึ้นไป
+        """
         e = np.full(self.n, 1e-3)
-        if class_probs is None:
+        if unknown:
+            e[:-1] = 0.05
+            e[-1] = 0.6
+        elif class_probs is None:
             e[-1] = 1.0
         else:
             e[:-1] = np.asarray(class_probs) * 0.98 + 1e-3
             e[-1] = 0.02
         return e
 
-    def update(self, class_probs):
+    def update(self, class_probs, unknown=False):
         pred = self.alpha @ self.A
-        a = pred * self.emission(class_probs)
+        a = pred * self.emission(class_probs, unknown)
         self.alpha = a / a.sum()
         return self.alpha
 
@@ -125,18 +132,26 @@ class TranscriptBuilder:
         self.tokens = []             # [(label, confidence, timestamp)]
         self.candidate, self.count = None, 0
         self.last_label = None
+        self.blank_run = 0
         self.emissions = []
 
-    def update(self, state_label, confidence, is_still, emission=None):
-        """คืนค่าโทเคนใหม่ (ถ้าเพิ่งยืนยันได้) ไม่เช่นนั้นคืน None"""
+    def update(self, state_label, confidence, is_still, emission=None, hand_present=False):
+        """
+        คืนค่าโทเคนใหม่ (ถ้าเพิ่งยืนยันได้) ไม่เช่นนั้นคืน None
+        hand_present=True : เห็นมือแต่ไม่อยู่ในฐานข้อมูล -> ไม่นับเป็นคำ และไม่ถือเป็นตัวคั่น
+                            (กันไม่ให้ท่าเดิมถูกบันทึกซ้ำ เมื่อมีบางเฟรมถูกปฏิเสธระหว่างค้างท่า)
+        """
         if emission is not None:
             self.emissions.append(np.asarray(emission, np.float32))
             if len(self.emissions) > 5000:
                 self.emissions = self.emissions[-5000:]
         if state_label == NONE_TOKEN:
             self.candidate, self.count = None, 0
-            self.last_label = None             # เอามือออก = ตัวคั่น (ทำท่าเดิมซ้ำได้)
+            self.blank_run = 0 if hand_present else self.blank_run + 1
+            if self.blank_run >= 3:            # เอามือออกจริง ≥ 3 เฟรม = ตัวคั่น (ทำท่าเดิมซ้ำได้)
+                self.last_label = None
             return None
+        self.blank_run = 0
         if confidence < self.conf_threshold or not is_still:
             self.count = max(0, self.count - 1)
             return None
@@ -175,10 +190,10 @@ class ThaiTextGenerator:
     def short(self, label):
         return self.info.get(label, {}).get("short_th", label)
 
-    def describe(self, label, confidence, runner_up=None, state="ok"):
+    def describe(self, label, confidence, runner_up=None, state="ok", reason=""):
         """
         คืน dict ข้อความสำหรับแสดงผล
-          state: "no_model" | "no_hand" | "moving" | "ok"
+          state: "no_model" | "no_hand" | "bad_geometry" | "unknown" | "moving" | "ok"
         """
         if state == "no_model":
             return {"title": "ยังไม่มีโมเดล", "subtitle": "",
@@ -186,6 +201,15 @@ class ThaiTextGenerator:
         if state == "no_hand":
             return {"title": "ไม่พบมือ", "subtitle": "",
                     "sentence": "กรุณายกมือให้อยู่ในกรอบสี่เหลี่ยมบนภาพกล้อง", "hand": "", "meaning": ""}
+        if state == "bad_geometry":
+            return {"title": "ขนาดมือไม่เหมาะสม", "subtitle": "ยังไม่นำไปคำนวณ",
+                    "sentence": reason, "hand": "", "meaning": ""}
+        if state == "unknown":
+            return {"title": "ไม่พบท่านี้ในฐานข้อมูล", "subtitle": "ไม่นำไปคำนวณ — รอท่าที่รู้จัก",
+                    "sentence": "พบมือ แต่ท่ามือไม่ตรงกับปางใดในฐานข้อมูล ระบบจะรอจนกว่าจะพบท่าที่อาจอยู่ในฐานข้อมูล",
+                    "hand": "ท่าที่รองรับ: " + " • ".join(self.short(k) for k in self.info),
+                    "meaning": "ถ้าเป็นท่าในฐานข้อมูลแต่ถูกปฏิเสธ: เลื่อนแถบ \"เกณฑ์ยอมรับ\" ให้ผ่อนปรนขึ้น "
+                               "หรือเก็บตัวอย่างท่านั้นจากกล้องแล้วกด \"ฝึกโมเดลใหม่\""}
         d = self.info.get(label, {})
         pct = confidence * 100
         title = d.get("name_th", label)

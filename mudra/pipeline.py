@@ -1,7 +1,11 @@
 """
 pipeline.py — รวมทุกขั้นตอนตอนใช้งานจริง (Inference / Deployment)
 
-  เฟรมกล้อง + ROI -> ภาพทำงาน -> หามือ -> สกัดฟีเจอร์ -> Standardize -> PCA -> โมเดล -> ความน่าจะเป็น
+  เฟรมกล้อง + ROI -> ภาพทำงาน -> หามือ
+     -> [ด่าน 1] ตรวจขนาดมือ (เล็กเกิน / สีผิวเต็มกรอบ)         ไม่ผ่าน = ไม่คำนวณต่อ
+     -> สกัดฟีเจอร์ -> Standardize -> PCA
+     -> [ด่าน 2] Open-set: อยู่ในฐานข้อมูลหรือไม่ (novelty)    ไม่ผ่าน = ไม่ส่งให้โมเดลจำแนก
+     -> โมเดลจำแนก -> ความน่าจะเป็นของแต่ละปาง
 
 ใช้ฟังก์ชันชุดเดียวกับตอนเทรน (dataset.prepare_source / make_working) เพื่อให้การเตรียมข้อมูลตรงกัน 100%
 """
@@ -11,11 +15,18 @@ from . import config
 from .dataset import make_working, prepare_source
 from .features import extract_features
 from .models import KNNClassifier, NeuralNetClassifier
+from .novelty import NoveltyDetector
 from .preprocessing import PCA, StandardScaler
 from .segmentation import SkinModel, extract_hand
 
+# สถานะผลวิเคราะห์ 1 เฟรม
+NO_HAND = "no_hand"            # ไม่พบสีผิว/มือในกรอบ
+BAD_GEOMETRY = "bad_geometry"  # พบ แต่ขนาดไม่เหมาะ (ด่าน 1)
+UNKNOWN = "unknown"            # พบมือ แต่ไม่อยู่ในฐานข้อมูล (ด่าน 2)
+KNOWN = "known"                # อยู่ในฐานข้อมูล -> จำแนกปางแล้ว
 
-def save_model(path, class_names, scaler, pca, model, model_type):
+
+def save_model(path, class_names, scaler, pca, model, model_type, novelty=None):
     """บันทึกทุกอย่างที่ต้องใช้ตอนทำนายลงไฟล์ .npz ไฟล์เดียว"""
     path.parent.mkdir(parents=True, exist_ok=True)
     data = {
@@ -30,8 +41,21 @@ def save_model(path, class_names, scaler, pca, model, model_type):
     }
     for k, v in model.get_params().items():
         data["m_" + k] = v
+    if novelty is not None:
+        for k, v in novelty.get_params().items():
+            data["nov_" + k] = v
     with open(path, "wb") as f:
         np.savez_compressed(f, **data)
+
+
+def check_geometry(hand):
+    """ด่าน 1: ตรวจขนาดมือก่อนสกัดฟีเจอร์ — คืนข้อความเหตุผลถ้าไม่ผ่าน, None ถ้าผ่าน"""
+    if hand.skin_ratio > config.MAX_SKIN_RATIO:
+        return "สีผิวเต็มกรอบ — ถอยห่างจากกล้อง หรือย้ายกรอบไม่ให้ใบหน้าอยู่ในกรอบ"
+    x1, y1, x2, y2 = hand.bbox
+    if max(x2 - x1, y2 - y1) < config.MIN_HAND_SIDE:
+        return "มือเล็กเกินไป — ขยับเข้าใกล้กล้อง หรือลากกรอบ ROI ให้เล็กลง"
+    return None
 
 
 class MudraRecognizer:
@@ -50,27 +74,47 @@ class MudraRecognizer:
             self.model = KNNClassifier.from_params(params)
         else:
             self.model = NeuralNetClassifier.from_params(params)
+        nov = {k[4:]: v for k, v in d.items() if k.startswith("nov_")}
+        self.novelty = NoveltyDetector.from_params(nov) if nov else None   # โมเดลเก่าไม่มีด่านนี้
+        self.sensitivity = 1.0          # ตัวคูณเกณฑ์: > 1 ยอมรับง่ายขึ้น, < 1 เข้มงวดขึ้น
         self.skin_model = skin_model or SkinModel.load(config.SKIN_FILE)
 
     def transform(self, F):
-        return self.pca.transform(self.scaler.transform(np.atleast_2d(F)))
+        """ฟีเจอร์ -> (Z ในปริภูมิ PCA, reconstruction error)"""
+        Xs = self.scaler.transform(np.atleast_2d(F))
+        return self.pca.transform(Xs), self.pca.reconstruction_error(Xs)
 
     def predict_proba_features(self, F):
-        return self.model.predict_proba(self.transform(F))
+        return self.model.predict_proba(self.transform(F)[0])
 
     def analyze(self, frame_rgb, roi):
         """
-        วิเคราะห์ 1 เฟรม: คืน dict {found, probs, label, confidence, hand, work}
-        roi = (x1, y1, x2, y2) ในพิกัดของ frame_rgb
+        วิเคราะห์ 1 เฟรม  roi = (x1, y1, x2, y2) ในพิกัดของ frame_rgb
+        คืน dict: status (no_hand | bad_geometry | unknown | known), reason, novelty,
+                  probs/label/confidence (มีค่าเฉพาะ status = known), hand, work
         """
         small, roi_s = prepare_source(frame_rgb, roi)
         work = make_working(small, roi_s)
         hand = extract_hand(work, self.skin_model)
-        out = {"found": hand.found, "hand": hand, "work": work, "probs": None,
-               "label": None, "confidence": 0.0}
+        out = {"status": NO_HAND, "found": hand.found, "hand": hand, "work": work, "reason": "",
+               "novelty": None, "probs": None, "label": None, "confidence": 0.0}
         if not hand.found:
             return out
-        probs = self.predict_proba_features(extract_features(hand))[0]
+
+        reason = check_geometry(hand)                                   # ด่าน 1
+        if reason:
+            out.update(status=BAD_GEOMETRY, reason=reason)
+            return out
+
+        Z, E = self.transform(extract_features(hand))
+        if self.novelty is not None:                                    # ด่าน 2
+            score = float(self.novelty.scores(Z, E)[0])
+            out["novelty"] = score
+            if score > self.sensitivity:
+                out.update(status=UNKNOWN, reason="ท่ามือนี้ไม่ตรงกับปางใดในฐานข้อมูล")
+                return out                                              # ไม่ส่งให้โมเดลจำแนก
+
+        probs = self.model.predict_proba(Z)[0]                          # จำแนกปาง
         i = int(probs.argmax())
-        out.update(probs=probs, label=self.class_names[i], confidence=float(probs[i]))
+        out.update(status=KNOWN, probs=probs, label=self.class_names[i], confidence=float(probs[i]))
         return out

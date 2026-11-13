@@ -30,6 +30,7 @@ from mudra import config
 from mudra.dataset import class_names_from_info, load_mudra_info, load_sources
 from mudra.image_ops import resize_nearest, rgb_to_gray
 from mudra.nlp import NONE_TOKEN, HMMFilter, ThaiTextGenerator, TranscriptBuilder
+from mudra.pipeline import BAD_GEOMETRY, KNOWN, NO_HAND, UNKNOWN
 from mudra.segmentation import SkinModel
 
 W, H = 640, 480
@@ -43,6 +44,7 @@ C_GOLD = "#e3b04b"
 C_GREEN = "#4cd07d"
 C_YELLOW = "#f2c94c"
 C_RED = "#eb5757"
+C_ORANGE = "#f2994a"
 
 
 def to_photo(rgb):
@@ -119,6 +121,8 @@ class MudraApp:
             except Exception as e:  # ไฟล์เสีย / เวอร์ชันไม่ตรง
                 self.recognizer = None
                 print("โหลดโมเดลไม่สำเร็จ:", e)
+        if self.recognizer is not None and hasattr(self, "sens_var"):
+            self.recognizer.sensitivity = self.sens_var.get()   # คงค่าแถบเลื่อนหลังเทรนใหม่
         self.hmm = HMMFilter(len(self.class_names))
         old = getattr(self, "transcript", None)          # เทรนใหม่แล้วไม่ลบข้อความเดิม
         if old is None or old.class_names != list(self.class_names):
@@ -175,29 +179,45 @@ class MudraApp:
         row.pack(fill="x", pady=(8, 0))
         self.pv_crop = self._preview(row, "ภาพที่โมเดลเห็น")
         self.pv_mask = self._preview(row, "รูปทรงมือ (mask)")
-        meter = tk.Frame(row, bg=C_PANEL, padx=10, pady=8)
+        meter = tk.Frame(row, bg=C_PANEL, padx=10, pady=6)
         meter.pack(side="left", fill="both", expand=True, padx=(8, 0))
-        tk.Label(meter, text="การเคลื่อนไหว", font=self.f_hd, fg=C_TEXT, bg=C_PANEL).pack(anchor="w")
-        self.cv_motion = tk.Canvas(meter, width=200, height=16, bg=C_CARD, highlightthickness=0)
+        self.BAR = 95 if self.compact else 150
+        col_a = tk.Frame(meter, bg=C_PANEL)
+        col_a.pack(side="left", anchor="n")
+        col_b = tk.Frame(meter, bg=C_PANEL)
+        col_b.pack(side="left", anchor="n", padx=(14, 0))
+
+        # คอลัมน์ A: การเคลื่อนไหว
+        tk.Label(col_a, text="การเคลื่อนไหว", font=self.f_hd, fg=C_TEXT, bg=C_PANEL).pack(anchor="w")
+        self.cv_motion = tk.Canvas(col_a, width=self.BAR, height=14, bg=C_CARD, highlightthickness=0)
         self.cv_motion.pack(anchor="w", pady=4)
-        self.cv_motion_bar = self.cv_motion.create_rectangle(0, 0, 0, 16, fill=C_GREEN, outline="")
-        thr_x = int(200 * min(1.0, config.MOTION_MOVING_RATIO / 0.3))
-        self.cv_motion.create_line(thr_x, 0, thr_x, 16, fill="white", dash=(2, 2))
-        self.lbl_motion = tk.Label(meter, text="-", font=self.f_body, fg=C_MUTED, bg=C_PANEL,
-                                   width=26, anchor="w")
+        self.cv_motion_bar = self.cv_motion.create_rectangle(0, 0, 0, 14, fill=C_GREEN, outline="")
+        thr_x = int(self.BAR * min(1.0, config.MOTION_MOVING_RATIO / 0.3))
+        self.cv_motion.create_line(thr_x, 0, thr_x, 14, fill="white", dash=(2, 2))
+        self.lbl_motion = tk.Label(col_a, text="-", font=self.f_small, fg=C_MUTED, bg=C_PANEL,
+                                   width=20, height=2, anchor="nw", justify="left")
         self.lbl_motion.pack(anchor="w")
-        self.lbl_fps = tk.Label(meter, text="FPS -", font=self.f_small, fg=C_MUTED, bg=C_PANEL)
-        self.lbl_fps.pack(anchor="w", pady=(6, 0))
-        self.lbl_model = tk.Label(meter, text="", font=self.f_small, fg=C_MUTED, bg=C_PANEL,
-                                  justify="left", wraplength=210)
-        self.lbl_model.pack(anchor="w")
+
+        # คอลัมน์ B: ด่านตรวจ "อยู่ในฐานข้อมูลหรือไม่" (open-set)
+        tk.Label(col_b, text="ระยะห่างจากฐานข้อมูล", font=self.f_hd, fg=C_TEXT, bg=C_PANEL).pack(anchor="w")
+        self.cv_nov = tk.Canvas(col_b, width=self.BAR, height=14, bg=C_CARD, highlightthickness=0)
+        self.cv_nov.pack(anchor="w", pady=4)
+        self.cv_nov_bar = self.cv_nov.create_rectangle(0, 0, 0, 14, fill=C_GREEN, outline="")
+        self.cv_nov_thr = self.cv_nov.create_line(0, 0, 0, 14, fill="white", width=2)
+        self.lbl_nov = tk.Label(col_b, text="-", font=self.f_small, fg=C_MUTED, bg=C_PANEL,
+                                width=24, height=2, anchor="nw", justify="left")
+        self.lbl_nov.pack(anchor="w")
+        self.sens_var = tk.DoubleVar(value=1.0)
+        tk.Scale(col_b, from_=0.5, to=2.5, resolution=0.1, orient="horizontal", variable=self.sens_var,
+                 length=self.BAR, width=10, showvalue=True, font=self.f_small, label="เกณฑ์ยอมรับ (ขวา = ผ่อนปรน)",
+                 bg=C_PANEL, fg=C_MUTED, troughcolor=C_CARD, highlightthickness=0, bd=0,
+                 command=lambda v: self._set_sensitivity(float(v))).pack(anchor="w")
 
         # ---------------- ขวา: ข้อความ (ทุกป้ายมีความสูงคงที่ หน้าจอจะไม่กระตุกเมื่อข้อความเปลี่ยน)
         right_h = max(self.DH + 150, 520 if self.compact else 640)
         right = tk.Frame(main, bg=C_PANEL, padx=16, pady=10, width=540, height=right_h)
         right.pack(side="left", fill="y", padx=(14, 0))
         right.pack_propagate(False)
-        wrap = 500
 
         tk.Label(right, text="ผลการตรวจจับ", font=self.f_small, fg=C_MUTED, bg=C_PANEL).pack(anchor="w")
         self.lbl_title = tk.Label(right, text="-", font=self.f_h1, fg=C_GOLD, bg=C_PANEL, anchor="w")
@@ -208,15 +228,15 @@ class MudraApp:
         self.cv_conf.pack(fill="x", pady=(4, 4))
         self.cv_conf_bar = self.cv_conf.create_rectangle(0, 0, 0, 8, fill=C_GOLD, outline="")
         self.lbl_sentence = tk.Label(right, text="", font=self.f_hd, fg=C_TEXT, bg=C_PANEL, height=2,
-                                     wraplength=wrap, justify="left", anchor="nw")
+                                     justify="left", anchor="nw")
         self.lbl_sentence.pack(anchor="w", fill="x")
         self.lbl_hand = tk.Label(right, text="", font=self.f_body, fg=C_TEXT, bg=C_PANEL,
                                  height=1 if self.compact else 2,
-                                 wraplength=wrap, justify="left", anchor="nw")
+                                 justify="left", anchor="nw")
         self.lbl_hand.pack(anchor="w", fill="x", pady=(2, 0))
         self.lbl_meaning = tk.Label(right, text="", font=self.f_body, fg=C_MUTED, bg=C_PANEL,
                                     height=2 if self.compact else 3,
-                                    wraplength=wrap, justify="left", anchor="nw")
+                                    justify="left", anchor="nw")
         self.lbl_meaning.pack(anchor="w", fill="x", pady=(2, 4))
 
         tk.Label(right, text="ความน่าจะเป็นของแต่ละปาง (หลังกรองด้วย HMM)", font=self.f_small,
@@ -240,7 +260,7 @@ class MudraApp:
                  bg=C_PANEL).pack(anchor="w")
         # สรุปวางชิดล่างก่อน เพื่อไม่ให้ถูกกล่องข้อความเบียดหาย
         self.lbl_summary = tk.Label(right, text=self.nlg.summarize([]), font=self.f_body, fg=C_GOLD,
-                                    bg=C_PANEL, wraplength=wrap, justify="left", anchor="nw", height=2)
+                                    bg=C_PANEL, justify="left", anchor="nw", height=2)
         self.lbl_summary.pack(side="bottom", anchor="w", fill="x", pady=(4, 0))
         tf = tk.Frame(right, bg=C_PANEL)
         tf.pack(fill="both", expand=True, pady=(2, 0))
@@ -272,11 +292,18 @@ class MudraApp:
         self._button(ctl, "ล้างข้อความ", self.clear_transcript)
         self._button(ctl, "บันทึกข้อความ", self.save_transcript)
 
-        self.status = tk.Label(r, text="", font=self.f_small, fg=C_MUTED, bg=C_BG, anchor="w")
-        self.status.pack(fill="x", padx=14, pady=(0, 8))
+        bar = tk.Frame(r, bg=C_BG)
+        bar.pack(fill="x", padx=14, pady=(0, 8))
+        self.lbl_fps = tk.Label(bar, text="FPS -", font=self.f_small, fg=C_MUTED, bg=C_BG, width=9, anchor="e")
+        self.lbl_fps.pack(side="right")
+        self.lbl_model = tk.Label(bar, text="", font=self.f_small, fg=C_MUTED, bg=C_BG)
+        self.lbl_model.pack(side="right", padx=(0, 10))
+        self.status = tk.Label(bar, text="", font=self.f_small, fg=C_MUTED, bg=C_BG, anchor="w")
+        self.status.pack(side="left", fill="x", expand=True)
         self.set_status("พร้อมใช้งาน" if self.recognizer else
                         "ยังไม่มีโมเดล — กด 'ฝึกโมเดลใหม่' หรือรัน python train.py")
         self._update_model_label()
+        self._set_sensitivity(self.sens_var.get())
 
     def _preview(self, parent, title):
         f = tk.Frame(parent, bg=C_PANEL, padx=6, pady=4)
@@ -308,12 +335,21 @@ class MudraApp:
         if self.recognizer is None:
             self.lbl_model.configure(text="โมเดล: ยังไม่มี")
             return
-        txt = f"โมเดล: {self.recognizer.model.name}"
+        txt = f"โมเดล {self.recognizer.model.name}"
         if config.MODEL_META_FILE.exists():
             import json
             m = json.loads(config.MODEL_META_FILE.read_text(encoding="utf-8"))
-            txt += f"\nเวอร์ชัน {m.get('version', '-')}\ntest acc {m['test']['accuracy'] * 100:.1f}%"
+            txt += f"  •  v{m.get('version', '-')}  •  test acc {m['test']['accuracy'] * 100:.1f}%"
+        if self.recognizer.novelty is None:
+            txt += "  •  โมเดลเก่า: ยังไม่มีด่านปฏิเสธท่าที่ไม่รู้จัก (กดฝึกโมเดลใหม่)"
         self.lbl_model.configure(text=txt)
+
+    def _set_sensitivity(self, value):
+        """แถบเลื่อน "เกณฑ์ยอมรับ": ตัวคูณเกณฑ์ของด่าน open-set"""
+        if self.recognizer:
+            self.recognizer.sensitivity = value
+        x = self.BAR * min(1.0, value / 2.5)
+        self.cv_nov.coords(self.cv_nov_thr, x, 0, x, 14)
 
     # ================================================================== ROI ด้วยเมาส์
     def _roi_press(self, e):
@@ -373,29 +409,36 @@ class MudraApp:
         self.motion_ema = 0.6 * self.motion_ema + 0.4 * ratio
         still = self.motion_ema < config.MOTION_MOVING_RATIO
 
-        # --- 2) หามือ + จำแนกปาง
+        # --- 2) หามือ -> ด่านตรวจขนาด -> ด่านตรวจ "อยู่ในฐานข้อมูลหรือไม่" -> จำแนกปาง (เฉพาะที่ผ่าน)
         res = self.recognizer.analyze(frame, roi) if self.recognizer else None
-        found = bool(res and res["found"])
+        status = res["status"] if res else None
 
         # --- 3) NLP: HMM กรองผลตามเวลา -> ถอดเป็นโทเคน -> สร้างประโยค
+        #        ภาพที่ไม่อยู่ในฐานข้อมูลไม่มีผลทำนาย จึงไม่ถูกนับเป็นปางใดและไม่ถูกบันทึกเป็นข้อความ
         if self.recognizer:
-            alpha = self.hmm.update(res["probs"] if found else None)
+            probs = res["probs"] if status == KNOWN else None
+            unknown = status in (UNKNOWN, BAD_GEOMETRY)
+            alpha = self.hmm.update(probs, unknown)
             state = int(alpha.argmax())
             label = self.class_names[state] if state < len(self.class_names) else NONE_TOKEN
             conf = float(alpha[state])
             cls = alpha[:-1] / max(alpha[:-1].sum(), 1e-9)
             order = np.argsort(-cls)
             runner = self.class_names[int(order[1])] if len(order) > 1 else None
-            tok = self.transcript.update(label, conf, still, self.hmm.emission(res["probs"] if found else None))
+            tok = self.transcript.update(label, conf, still, self.hmm.emission(probs, unknown),
+                                         hand_present=status != NO_HAND)
             if tok:
                 self._append_token(tok)
             if label == NONE_TOKEN:
-                kind = "no_hand"
+                kind = {UNKNOWN: "unknown", BAD_GEOMETRY: "bad_geometry"}.get(status, "no_hand")
+                if status == KNOWN:                    # เพิ่งเริ่มพบท่าที่รู้จัก (HMM ยังไม่ทันเปลี่ยน)
+                    kind = "moving"
+                    label, conf = res["label"], res["confidence"]
             elif not still:
                 kind = "moving"
             else:
                 kind = "ok"
-            desc = self.nlg.describe(label, conf, runner, kind)
+            desc = self.nlg.describe(label, conf, runner, kind, res["reason"] if res else "")
         else:
             cls, conf, kind = None, 0.0, "no_model"
             desc = self.nlg.describe(None, 0, None, "no_model")
@@ -409,6 +452,7 @@ class MudraApp:
         self._draw_previews(res)
         self._draw_panel(desc, cls, conf, kind)
         self._update_fps(ratio, still)
+        self._update_gate(res)
 
     # ================================================================== drawing
     def _draw_camera(self, frame, moving, res, roi, kind, still):
@@ -423,14 +467,16 @@ class MudraApp:
         if hand is not None and hand.mask is not None and x2 > x1 and y2 > y1:
             m = resize_nearest(hand.mask, y2 - y1, x2 - x1)
             sub = disp[y1:y2, x1:x2]
-            sub[m] = (sub[m] * 0.55 + np.array([60, 220, 110]) * 0.45).astype(np.uint8)
+            tint = [60, 220, 110] if res["status"] == KNOWN else [245, 150, 50]   # เขียว = รู้จัก, ส้ม = ไม่รู้จัก
+            sub[m] = (sub[m] * 0.55 + np.array(tint) * 0.45).astype(np.uint8)
         if self.s != 1.0:
             disp = resize_nearest(disp, self.DH, self.DW)
         self.photo = to_photo(disp)
         self.cv.itemconfigure(self.cv_img, image=self.photo)
 
         s = self.s
-        color = {"ok": C_GREEN, "moving": C_YELLOW, "no_hand": C_RED, "no_model": C_MUTED}[kind]
+        color = {"ok": C_GREEN, "moving": C_YELLOW, "no_hand": C_RED, "no_model": C_MUTED,
+                 "unknown": C_ORANGE, "bad_geometry": C_ORANGE}[kind]
         if not self.drag_start:
             self.cv.coords(self.cv_roi, x1 * s, y1 * s, x2 * s, y2 * s)
         self.cv.itemconfigure(self.cv_roi, outline=color)
@@ -444,7 +490,8 @@ class MudraApp:
         else:
             self.cv.itemconfigure(self.cv_box, state="hidden")
         tag = {"ok": "นิ่ง • กำลังตรวจจับ", "moving": "กำลังเคลื่อนไหว",
-               "no_hand": "ไม่พบมือในกรอบ", "no_model": "ยังไม่มีโมเดล"}[kind]
+               "no_hand": "ไม่พบมือในกรอบ", "no_model": "ยังไม่มีโมเดล",
+               "unknown": "ไม่พบท่านี้ในฐานข้อมูล", "bad_geometry": "ขนาดมือไม่เหมาะสม"}[kind]
         if kind == "ok" and self.prev_desc:
             tag = self.prev_desc
         self.cv.itemconfigure(self.cv_tag, text=" " + tag + " ")
@@ -466,18 +513,52 @@ class MudraApp:
         self.pv_crop.itemconfigure(self.pv_crop.img_item, image=self.ph_crop)
         self.pv_mask.itemconfigure(self.pv_mask.img_item, image=self.ph_mask)
 
+    def _fit(self, text, font, width=470, max_bytes=180):
+        """
+        ตัดบรรทัดภาษาไทยเองที่ช่องว่าง (วัดความกว้างด้วยฟอนต์จริง) แทนการให้ Tk ตัดบรรทัด
+        เหตุผล: Tk บน Windows วาดข้อความทีละช่วง ~200 ไบต์ (UTF-8, อักษรไทย = 3 ไบต์)
+        ถ้ารอยต่อช่วงตกกลางพยางค์ สระบน/วรรณยุกต์จะแยกเป็นวงกลมประ (เช่น "ขึ้น", "ชูนิ้วชี้")
+        จึงจำกัดทั้งความกว้างและความยาวไบต์ต่อบรรทัด
+        """
+        key = (text, font, width)
+        cache = self.__dict__.setdefault("_fit_cache", {})
+        if key in cache:
+            return cache[key]
+        fonts = self.__dict__.setdefault("_font_objs", {})
+        f = fonts.get(font) or fonts.setdefault(font, tkfont.Font(font=font))
+        lines = []
+        for para in text.split("\n"):
+            line = ""
+            for word in para.split(" "):
+                cand = word if not line else line + " " + word
+                if not line or (f.measure(cand) <= width and len(cand.encode("utf-8")) <= max_bytes):
+                    line = cand
+                else:
+                    lines.append(line)
+                    line = word
+            lines.append(line)
+        if len(cache) > 500:
+            cache.clear()
+        cache[key] = "\n".join(lines)
+        return cache[key]
+
     def _draw_panel(self, desc, cls, conf, kind):
         self.prev_desc = desc["title"] if kind == "ok" else None
         color = C_GOLD if kind == "ok" and desc["title"] != "ไม่แน่ใจ" else C_MUTED
+        if kind in ("unknown", "bad_geometry"):
+            color = C_ORANGE
         if self.lbl_title.cget("text") != desc["title"]:
             n = len(desc["title"])          # ชื่อยาวใช้ฟอนต์เล็กลง ให้อยู่บรรทัดเดียวเสมอ
             size = self.h1_size if n <= 28 else (self.h1_size - 4 if n <= 36 else self.h1_size - 7)
             self.lbl_title.configure(text=desc["title"], font=(self.fam, size, "bold"))
         self.lbl_title.configure(fg=color)
         self.lbl_sub.configure(text=desc["subtitle"])
-        self.lbl_sentence.configure(text=desc["sentence"])
-        self.lbl_hand.configure(text=("ลักษณะท่ามือ: " + desc["hand"]) if desc["hand"] else "")
-        self.lbl_meaning.configure(text=("ความหมาย: " + desc["meaning"]) if desc["meaning"] else "")
+        recognized = kind in ("ok", "moving")
+        hand = ("ลักษณะท่ามือ: " if recognized else "") + desc["hand"] if desc["hand"] else ""
+        meaning = ("ความหมาย: " if recognized else "") + desc["meaning"] if desc["meaning"] else ""
+        self.lbl_sentence.configure(text=self._fit(desc["sentence"], self.f_hd))
+        self.lbl_hand.configure(text=self._fit(hand, self.f_body))
+        self.lbl_meaning.configure(text=self._fit(meaning, self.f_body))
         wbar = self.cv_conf.winfo_width()
         self.cv_conf.coords(self.cv_conf_bar, 0, 0, wbar * (conf if kind in ("ok", "moving") else 0), 8)
         top = int(np.argmax(cls)) if cls is not None and kind in ("ok", "moving") else -1
@@ -495,16 +576,36 @@ class MudraApp:
         if dt > 0:
             self.fps = 0.9 * self.fps + 0.1 / dt
         self.lbl_fps.configure(text=f"FPS {self.fps:4.1f}")
-        self.cv_motion.coords(self.cv_motion_bar, 0, 0, 200 * min(1.0, self.motion_ema / 0.3), 16)
+        self.cv_motion.coords(self.cv_motion_bar, 0, 0, self.BAR * min(1.0, self.motion_ema / 0.3), 14)
         self.cv_motion.itemconfigure(self.cv_motion_bar, fill=C_GREEN if still else C_YELLOW)
         self.lbl_motion.configure(text=("นิ่ง" if still else "กำลังเคลื่อนไหว") +
-                                  f"  ({self.motion_ema * 100:.0f}% ของกรอบ)")
+                                  f"\nขยับ {self.motion_ema * 100:.0f}% ของกรอบ")
+
+    def _update_gate(self, res):
+        """มาตรวัดด่าน open-set: แถบ = คะแนนความแปลกใหม่ (0..2.5), เส้นขาว = เกณฑ์ยอมรับ"""
+        score = res.get("novelty") if res else None
+        if score is None:
+            self.cv_nov.coords(self.cv_nov_bar, 0, 0, 0, 14)
+            msg = {NO_HAND: "ยังไม่พบมือ", BAD_GEOMETRY: "ขนาดมือไม่เหมาะสม"}.get(res["status"] if res else None,
+                                                                                "-")
+            if self.recognizer is not None and self.recognizer.novelty is None:
+                msg = "โมเดลเก่า: ไม่มีด่านนี้"
+            self.lbl_nov.configure(text=msg, fg=C_MUTED)
+            return
+        sens = self.recognizer.sensitivity
+        ok = score <= sens
+        self.cv_nov.coords(self.cv_nov_bar, 0, 0, self.BAR * min(1.0, score / 2.5), 14)
+        self.cv_nov.itemconfigure(self.cv_nov_bar, fill=C_GREEN if ok else C_ORANGE)
+        self.lbl_nov.configure(text=f"คะแนน {score:.2f} (เกณฑ์ {sens:.1f})\n" +
+                               ("✓ อยู่ในฐานข้อมูล" if ok else "✗ ไม่อยู่ในฐานข้อมูล"),
+                               fg=C_GREEN if ok else C_ORANGE)
 
     # ================================================================== transcript
     def _append_token(self, tok):
         self.txt.insert("end", self.nlg.token_line(tok) + "\n")
         self.txt.see("end")
-        self.lbl_summary.configure(text=self.nlg.summarize([t[0] for t in self.transcript.tokens]))
+        self.lbl_summary.configure(text=self._fit(self.nlg.summarize([t[0] for t in self.transcript.tokens]),
+                                                  self.f_body))
 
     def clear_transcript(self):
         self.transcript.reset()
@@ -683,7 +784,16 @@ def main():
             print(f"เปิดกล้องไม่ได้ ({e}) -> สลับเป็นโหมดสาธิต")
             demo = True
     if demo:
-        items = [(s.load(), s.roi) for s in load_sources(include_collected=False)]
+        from mudra.dataset import NECK_ROIS, synthetic_blob
+        from mudra.io_utils import read_image_rgb
+        srcs = load_sources(include_collected=False)
+        items = [(s.load(), s.roi) for s in srcs]
+        # ภาพที่ "ไม่อยู่ในฐานข้อมูล" สำหรับสาธิตด่านปฏิเสธ: คอ/คาง และรูปทรงมือสุ่ม
+        neck = next((s for s in srcs if s.path.name in NECK_ROIS), None)
+        if neck is not None:
+            items.append((read_image_rgb(neck.path), NECK_ROIS[neck.path.name]))
+        blob = synthetic_blob(np.random.default_rng(3), 256).astype(np.uint8)
+        items.append((blob, (0, 0, 256, 256)))
         cam = DemoCamera(items)
 
     root = tk.Tk()

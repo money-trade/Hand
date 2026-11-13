@@ -130,3 +130,12 @@ class PCA:
 
     def fit_transform(self, X, log=None):
         return self.fit(X, log).transform(X)
+
+    def reconstruction_error(self, X):
+        """
+        ค่าคลาดเคลื่อนการสร้างกลับ: ฉาย x ลงแกนหลัก แล้วฉายกลับ  e = mean((x - x̂)²)
+        ภาพที่มีลักษณะต่างจากข้อมูลฝึก จะมีส่วนที่อยู่นอกแกนหลักมาก -> e สูง
+        """
+        Xc = np.asarray(X, np.float32) - self.mean_.astype(np.float32)
+        R = Xc - (Xc @ self.components_.T) @ self.components_
+        return (R * R).mean(axis=1)
