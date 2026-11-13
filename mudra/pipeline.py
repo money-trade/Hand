@@ -80,6 +80,8 @@ class MudraRecognizer:
         self.novelty = NoveltyDetector.from_params(nov) if nov else None   # โมเดลเก่าไม่มีด่านนี้
         self._tick, self._faces, self._face_age = 0, [], 0
         self._prev_gray = None
+        self._track, self._lost = None, 0
+        self.require_motion = False     # True = จับเฉพาะสีผิวที่ขยับ/ติดตามอยู่ (ใช้กับกล้องสด)
         self.ignore_faces = True        # ตัดใบหน้าออกก่อนหามือ
         self.sensitivity = 1.0          # ตัวคูณเกณฑ์: > 1 ยอมรับง่ายขึ้น, < 1 เข้มงวดขึ้น
         self.skin_model = skin_model or SkinModel.load(config.SKIN_FILE)
@@ -131,7 +133,16 @@ class MudraRecognizer:
         small, roi_s = prepare_source(frame_rgb, roi)
         work = make_working(small, roi_s)
         faces = self.work_faces(frame_rgb, roi, work.shape)             # ตัดใบหน้า โฟกัสแค่มือ
-        hand = extract_hand(work, self.skin_model, faces=faces, motion=self.work_motion(work))
+        motion = self.work_motion(work)
+        hand = extract_hand(work, self.skin_model, faces=faces, motion=motion,
+                            require_motion=self.require_motion, track=self._track)
+        if self.require_motion:                                         # ติดตามมือที่พบล่าสุด
+            if hand.found:
+                self._track, self._lost = hand.mask, 0
+            else:
+                self._lost += 1
+                if self._lost > config.HAND_LOST_FRAMES:
+                    self._track = None
         out = {"status": NO_HAND, "found": hand.found, "hand": hand, "work": work, "reason": "",
                "novelty": None, "probs": None, "label": None, "confidence": 0.0}
         if not hand.found:

@@ -119,6 +119,7 @@ class MudraApp:
         if config.MODEL_FILE.exists():
             try:
                 self.recognizer = MudraRecognizer(skin_model=self.skin)
+                self.recognizer.require_motion = config.HAND_ONLY_MOTION and not self.demo   # กล้องสด: สนใจเฉพาะมือที่ขยับ
                 self.class_names = self.recognizer.class_names
             except Exception as e:  # ไฟล์เสีย / เวอร์ชันไม่ตรง
                 self.recognizer = None

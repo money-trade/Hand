@@ -175,7 +175,8 @@ def cut_wrist(hand, border=2, min_arm_frac=0.25, min_keep=0.55):
 
 
 def extract_hand(work_rgb, skin_model, crop_size=config.CROP_SIZE,
-                 min_skin_ratio=config.MIN_SKIN_RATIO, faces=None, motion=None):
+                 min_skin_ratio=config.MIN_SKIN_RATIO, faces=None, motion=None,
+                 require_motion=False, track=None):
     """หาบริเวณมือในภาพทำงาน (ภาพ ROI ที่ปรับขนาดแล้ว) แล้ว crop ให้พร้อมสกัดฟีเจอร์"""
     h, w = work_rgb.shape[:2]
     smooth = box_blur(work_rgb, 1)
@@ -190,13 +191,25 @@ def extract_hand(work_rgb, skin_model, crop_size=config.CROP_SIZE,
     # เก็บเฉพาะกลุ่มใหญ่ (มือ/แขน) สูงสุด 3 กลุ่ม — ตัดสิ่งรบกวนสีคล้ายผิว
     # ถ้ามี motion mask (ภาพทำงานขนาดเดียวกัน) ให้กลุ่มที่เคลื่อนไหวได้คะแนนสูงขึ้น — มือมักขยับ ส่วนฉากหลังนิ่ง
     score = areas.astype(np.float32)
+    mov = np.zeros(len(areas), np.float32)
     if motion is not None and motion.shape == labels.shape:
-        mov = np.bincount(labels[motion & (labels > 0)], minlength=len(areas) + 1)[1:]
+        mov = np.bincount(labels[motion & (labels > 0)], minlength=len(areas) + 1)[1:].astype(np.float32)
         score = score * (1.0 + 2.0 * np.minimum(mov / np.maximum(areas, 1), 1.0))
+    if require_motion:
+        # โฟกัสเฉพาะ "มือ": รับเฉพาะกลุ่มสีผิวที่เคลื่อนไหว หรือที่ทับกับมือที่กำลังติดตามอยู่
+        # ใบหน้า/คอ/แขนเสื้อสีคล้ายผิวที่นิ่งอยู่เฉย ๆ จึงไม่ถูกนับ
+        ok = (mov >= config.HAND_MIN_MOVING_PIXELS) & (mov >= config.HAND_MIN_MOVING_FRAC * areas)
+        if track is not None and track.shape == labels.shape and track.any():
+            trk = np.bincount(labels[track & (labels > 0)], minlength=len(areas) + 1)[1:]
+            ok |= trk >= 0.25 * float(track.sum())
+        if not ok.any():
+            return HandResult(False, mask=np.zeros_like(mask))
+        score = np.where(ok, score, 0.0)
+        areas = np.where(ok, areas, 0)
     order = np.argsort(-score)
     largest = areas.max()
     keep = [i + 1 for i in order[:3]
-            if areas[i] >= max(0.15 * largest, 0.004 * h * w)]
+            if areas[i] > 0 and areas[i] >= max(0.15 * largest, 0.004 * h * w)]
     hand = np.isin(labels, keep)
     if config.CUT_WRIST:
         hand = cut_wrist(hand)

@@ -56,5 +56,19 @@ def test_motion_preferred():
     assert h.found and h.bbox[0] <= 25 and h.n_components == 2   # ยังเก็บทั้งคู่ แต่จัดอันดับโดยคำนึงถึงการเคลื่อนไหว
 
 
+def test_static_face_ignored_when_motion_required():
+    """หัวสีผิวนิ่ง ๆ ไม่ถูกนับ แต่มือที่ขยับถูกนับ และยังติดตามได้เมื่อมือหยุดนิ่ง"""
+    img = scene()
+    sk = SkinModel()
+    mov = np.zeros((160, 200), bool)
+    assert not extract_hand(img, sk, motion=mov, require_motion=True).found
+    mov[90:140, 140:180] = True                                     # มือขยับ
+    h = extract_hand(img, sk, motion=mov, require_motion=True)
+    assert h.found and h.bbox[0] >= 130, h.bbox
+    still = extract_hand(img, sk, motion=mov * False, require_motion=True, track=h.mask)
+    assert still.found and still.bbox[0] >= 130, "ต้องติดตามมือที่หยุดนิ่งต่อได้"
+
+
 if __name__ == "__main__":
-    test_face_removed(); test_hand_near_face_kept(); test_wrist_cut(); test_motion_preferred(); print("ผ่านทั้งหมด")
+    test_face_removed(); test_hand_near_face_kept(); test_wrist_cut(); test_motion_preferred()
+    test_static_face_ignored_when_motion_required(); print("ผ่านทั้งหมด")
