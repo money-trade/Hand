@@ -1,0 +1,57 @@
+{
+  "version": "20261106_150302",
+  "model": "MLP 120-128-64-7",
+  "model_type": "nn",
+  "classes": [
+    "abhaya",
+    "chin",
+    "dharmachakra",
+    "ksepana",
+    "mudra_R",
+    "namaskara_mudra",
+    "vitarka_mudra"
+  ],
+  "n_samples": 2807,
+  "feature_dim": 2035,
+  "pca_dim": 120,
+  "split": {
+    "train": 1967,
+    "val": 420,
+    "test": 420
+  },
+  "val": {
+    "accuracy": 1.0,
+    "macro_f1": 1.0
+  },
+  "test": {
+    "accuracy": 0.9976190476190476,
+    "macro_f1": 0.9976188822636493
+  },
+  "real_test": null,
+  "robustness": {
+    "1.0": 0.9952380952380953,
+    "1.5": 0.9714285714285714,
+    "2.0": 0.8714285714285714
+  },
+  "candidates": [
+    {
+      "model": "kNN",
+      "val_acc": 1.0,
+      "val_f1": 1.0,
+      "train_seconds": 0.0005044937133789062
+    },
+    {
+      "model": "Softmax Regression",
+      "val_acc": 0.9952380952380953,
+      "val_f1": 0.9952379298826969,
+      "train_seconds": 1.0632312297821045
+    },
+    {
+      "model": "MLP 120-128-64-7",
+      "val_acc": 1.0,
+      "val_f1": 1.0,
+      "train_seconds": 1.4745230674743652
+    }
+  ],
+  "train_seconds": 83.21398520469666
+}
