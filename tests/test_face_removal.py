@@ -37,5 +37,24 @@ def test_hand_near_face_kept():
     assert h.found and h.bbox[0] <= 105
 
 
+def test_wrist_cut():
+    """แขนแคบพาดมาจากขอบล่าง ฝ่ามือกว้างกว่า -> ต้องตัดแขนส่วนเกินทิ้ง"""
+    img = np.full((160, 200, 3), 60, np.uint8)
+    img[40:90, 70:130] = SKIN          # ฝ่ามือ
+    img[90:160, 90:110] = SKIN         # แขน (ติดขอบล่าง)
+    h = extract_hand(img, SkinModel())
+    assert h.found and h.bbox[3] < 125, f"ยังมีแขนยาวเกิน: {h.bbox}"
+
+
+def test_motion_preferred():
+    img = np.full((160, 200, 3), 60, np.uint8)
+    img[20:80, 20:80] = SKIN           # ก้อนใหญ่ นิ่ง
+    img[90:130, 130:170] = SKIN        # ก้อนเล็ก เคลื่อนไหว
+    mov = np.zeros((160, 200), bool)
+    mov[90:130, 130:170] = True
+    h = extract_hand(img, SkinModel(), motion=mov)
+    assert h.found and h.bbox[0] <= 25 and h.n_components == 2   # ยังเก็บทั้งคู่ แต่จัดอันดับโดยคำนึงถึงการเคลื่อนไหว
+
+
 if __name__ == "__main__":
-    test_face_removed(); test_hand_near_face_kept(); print("ผ่านทั้งหมด")
+    test_face_removed(); test_hand_near_face_kept(); test_wrist_cut(); test_motion_preferred(); print("ผ่านทั้งหมด")

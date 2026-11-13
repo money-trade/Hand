@@ -15,6 +15,7 @@ from . import config
 from .dataset import make_working, prepare_source
 from .features import extract_features
 from .io_utils import detect_faces
+from .image_ops import rgb_to_gray
 from .models import KNNClassifier, NeuralNetClassifier
 from .novelty import NoveltyDetector
 from .preprocessing import PCA, StandardScaler
@@ -78,6 +79,7 @@ class MudraRecognizer:
         nov = {k[4:]: v for k, v in d.items() if k.startswith("nov_")}
         self.novelty = NoveltyDetector.from_params(nov) if nov else None   # โมเดลเก่าไม่มีด่านนี้
         self._tick, self._faces, self._face_age = 0, [], 0
+        self._prev_gray = None
         self.ignore_faces = True        # ตัดใบหน้าออกก่อนหามือ
         self.sensitivity = 1.0          # ตัวคูณเกณฑ์: > 1 ยอมรับง่ายขึ้น, < 1 เข้มงวดขึ้น
         self.skin_model = skin_model or SkinModel.load(config.SKIN_FILE)
@@ -111,6 +113,15 @@ class MudraRecognizer:
         return [((fx1 - x1) * sx, (fy1 - y1) * sy, (fx2 - x1) * sx, (fy2 - y1) * sy)
                 for fx1, fy1, fx2, fy2 in self._faces]
 
+    def work_motion(self, work):
+        """mask การเคลื่อนไหวบนภาพทำงาน (ต่างจากเฟรมก่อน) — ไม่มีเฟรมก่อน/ขนาดเปลี่ยน = None"""
+        g = rgb_to_gray(work)
+        prev, self._prev_gray = self._prev_gray, g
+        if prev is None or prev.shape != g.shape:
+            return None
+        m = np.abs(g - prev) > config.MOTION_DIFF
+        return m if m.mean() < 0.5 else None            # กล้องสั่น/แสงเปลี่ยนทั้งภาพ = ไม่ใช้
+
     def analyze(self, frame_rgb, roi):
         """
         วิเคราะห์ 1 เฟรม  roi = (x1, y1, x2, y2) ในพิกัดของ frame_rgb
@@ -120,7 +131,7 @@ class MudraRecognizer:
         small, roi_s = prepare_source(frame_rgb, roi)
         work = make_working(small, roi_s)
         faces = self.work_faces(frame_rgb, roi, work.shape)             # ตัดใบหน้า โฟกัสแค่มือ
-        hand = extract_hand(work, self.skin_model, faces=faces)
+        hand = extract_hand(work, self.skin_model, faces=faces, motion=self.work_motion(work))
         out = {"status": NO_HAND, "found": hand.found, "hand": hand, "work": work, "reason": "",
                "novelty": None, "probs": None, "label": None, "confidence": 0.0}
         if not hand.found:
