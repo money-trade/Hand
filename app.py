@@ -15,12 +15,14 @@ app.py — โปรแกรมหลัก: ตรวจจับท่าม�
     ลากเมาส์บนภาพกล้อง = กำหนดกรอบ ROI ใหม่      Q / Esc  ออก
 """
 import argparse
+import json
 import queue
 import sys
 import threading
 import time
 import tkinter as tk
 import tkinter.font as tkfont
+import traceback
 from datetime import datetime
 from tkinter import messagebox, ttk
 
@@ -29,8 +31,9 @@ import numpy as np
 from mudra import config
 from mudra.dataset import class_names_from_info, load_mudra_info, load_sources
 from mudra.image_ops import resize_nearest, rgb_to_gray
+from mudra.io_utils import write_image_rgb
 from mudra.nlp import NONE_TOKEN, HMMFilter, ThaiTextGenerator, TranscriptBuilder
-from mudra.pipeline import BAD_GEOMETRY, KNOWN, NO_HAND, UNKNOWN
+from mudra.pipeline import BAD_GEOMETRY, KNOWN, NO_HAND, UNKNOWN, MudraRecognizer
 from mudra.segmentation import SkinModel
 
 W, H = 640, 480
@@ -96,7 +99,7 @@ class MudraApp:
         self.calib_until = None
         self.last_frame = None
         self.ticks, self.fps, self.t_last = 0, 0.0, time.time()
-        self.prev_desc = None
+        self._fit_cache, self._font_objs = {}, {}
 
         # ย่อภาพกล้องบนจอให้พอดีความสูงหน้าจอ (การประมวลผลยังใช้ 640x480 เสมอ)
         avail = root.winfo_screenheight() - 80
@@ -113,7 +116,6 @@ class MudraApp:
 
     # ================================================================== model
     def load_model(self):
-        from mudra.pipeline import MudraRecognizer
         if config.MODEL_FILE.exists():
             try:
                 self.recognizer = MudraRecognizer(skin_model=self.skin)
@@ -138,7 +140,6 @@ class MudraApp:
         k = -2 if self.compact else 0
         self.fam = fam
         self.h1_size = 24 + 2 * k
-        self.f_h1 = (fam, self.h1_size, "bold")
         self.f_h2 = (fam, 13 + k)
         self.f_hd = (fam, 12 + k // 2, "bold")
         self.f_body = (fam, 11 + k // 2)
@@ -168,8 +169,8 @@ class MudraApp:
                                                  state="hidden")
         self.cv_tag_bg = self.cv.create_rectangle(0, 0, 0, 0, fill="#000000", outline="", stipple="gray50")
         self.cv_tag = self.cv.create_text(0, 0, anchor="sw", fill="white", font=self.f_hd)
-        self.cv_hint = self.cv.create_text(self.DW // 2, self.DH - 10, anchor="s", fill="white", font=self.f_small,
-                                           text="วางมือในกรอบ • ลากเมาส์เพื่อย้ายกรอบ ROI")
+        self.cv.create_text(self.DW // 2, self.DH - 10, anchor="s", fill="white", font=self.f_small,
+                            text="วางมือในกรอบ • ลากเมาส์เพื่อย้ายกรอบ ROI")
         if not self.demo:
             self.cv.bind("<ButtonPress-1>", self._roi_press)
             self.cv.bind("<B1-Motion>", self._roi_drag)
@@ -220,7 +221,8 @@ class MudraApp:
         right.pack_propagate(False)
 
         tk.Label(right, text="ผลการตรวจจับ", font=self.f_small, fg=C_MUTED, bg=C_PANEL).pack(anchor="w")
-        self.lbl_title = tk.Label(right, text="-", font=self.f_h1, fg=C_GOLD, bg=C_PANEL, anchor="w")
+        self.lbl_title = tk.Label(right, text="-", font=(fam, self.h1_size, "bold"), fg=C_GOLD, bg=C_PANEL,
+                                  anchor="w")
         self.lbl_title.pack(anchor="w", fill="x")
         self.lbl_sub = tk.Label(right, text="", font=self.f_h2, fg=C_MUTED, bg=C_PANEL, anchor="w")
         self.lbl_sub.pack(anchor="w", fill="x")
@@ -231,30 +233,28 @@ class MudraApp:
                                      justify="left", anchor="nw")
         self.lbl_sentence.pack(anchor="w", fill="x")
         self.lbl_hand = tk.Label(right, text="", font=self.f_body, fg=C_TEXT, bg=C_PANEL,
-                                 height=1 if self.compact else 2,
-                                 justify="left", anchor="nw")
+                                 height=1 if self.compact else 2, justify="left", anchor="nw")
         self.lbl_hand.pack(anchor="w", fill="x", pady=(2, 0))
         self.lbl_meaning = tk.Label(right, text="", font=self.f_body, fg=C_MUTED, bg=C_PANEL,
-                                    height=2 if self.compact else 3,
-                                    justify="left", anchor="nw")
+                                    height=2 if self.compact else 3, justify="left", anchor="nw")
         self.lbl_meaning.pack(anchor="w", fill="x", pady=(2, 4))
 
         tk.Label(right, text="ความน่าจะเป็นของแต่ละปาง (หลังกรองด้วย HMM)", font=self.f_small,
                  fg=C_MUTED, bg=C_PANEL).pack(anchor="w")
-        n = len(self.class_names)
         rh = self.row_h
-        self.cv_probs = tk.Canvas(right, height=rh * n + 4, bg=C_PANEL, highlightthickness=0)
+        self.cv_probs = tk.Canvas(right, height=rh * len(self.class_names) + 4, bg=C_PANEL,
+                                  highlightthickness=0)
         self.cv_probs.pack(fill="x", pady=(2, 6))
         self.prob_items = []
         for i, c in enumerate(self.class_names):
             y = 2 + i * rh
-            t = self.cv_probs.create_text(0, y + rh / 2, anchor="w", text=self.nlg.short(c),
-                                          fill=C_TEXT, font=self.f_small)
-            bg = self.cv_probs.create_rectangle(110, y + 3, 440, y + rh - 3, fill=C_CARD, outline="")
+            self.cv_probs.create_text(0, y + rh / 2, anchor="w", text=self.nlg.short(c),
+                                      fill=C_TEXT, font=self.f_small)
+            self.cv_probs.create_rectangle(110, y + 3, 440, y + rh - 3, fill=C_CARD, outline="")
             bar = self.cv_probs.create_rectangle(110, y + 3, 110, y + rh - 3, fill=C_GOLD, outline="")
             pct = self.cv_probs.create_text(500, y + rh / 2, anchor="e", text="", fill=C_MUTED,
                                             font=self.f_small)
-            self.prob_items.append((t, bg, bar, pct))
+            self.prob_items.append((bar, pct))
 
         tk.Label(right, text="ข้อความที่ถอดได้ (Transcript)", font=self.f_hd, fg=C_TEXT,
                  bg=C_PANEL).pack(anchor="w")
@@ -275,15 +275,13 @@ class MudraApp:
         ctl = tk.Frame(r, bg=C_BG)
         ctl.pack(fill="x", padx=14, pady=(6, 2))
         tk.Label(ctl, text="เก็บข้อมูลจริง:", font=self.f_body, fg=C_TEXT, bg=C_BG).pack(side="left")
-        self.class_var = tk.StringVar()
         choices = [f"{i + 1}. {self.nlg.short(c)}" for i, c in enumerate(self.class_names)]
-        self.cb_class = ttk.Combobox(ctl, values=choices, textvariable=self.class_var, width=16,
-                                     state="readonly", font=self.f_body)
+        self.cb_class = ttk.Combobox(ctl, values=choices, width=16, state="readonly", font=self.f_body)
         self.cb_class.current(0)
         self.cb_class.pack(side="left", padx=4)
         self.cb_class.bind("<<ComboboxSelected>>", lambda e: self.refresh_counts())
-        self.btn_one = self._button(ctl, "เก็บ 1 ภาพ", lambda: self.save_sample(self.selected_label()))
-        self.btn_burst = self._button(ctl, "เก็บต่อเนื่อง 20 ภาพ", self.start_burst)
+        self._button(ctl, "เก็บ 1 ภาพ", lambda: self.save_sample(self.selected_label()))
+        self._button(ctl, "เก็บต่อเนื่อง 20 ภาพ", self.start_burst)
         self.lbl_count = tk.Label(ctl, text="", font=self.f_small, fg=C_MUTED, bg=C_BG)
         self.lbl_count.pack(side="left", padx=6)
         self.btn_train = self._button(ctl, "ฝึกโมเดลใหม่", self.start_training, C_GOLD, "#1b1b1b")
@@ -337,7 +335,6 @@ class MudraApp:
             return
         txt = f"โมเดล {self.recognizer.model.name}"
         if config.MODEL_META_FILE.exists():
-            import json
             m = json.loads(config.MODEL_META_FILE.read_text(encoding="utf-8"))
             txt += f"  •  v{m.get('version', '-')}  •  test acc {m['test']['accuracy'] * 100:.1f}%"
         if self.recognizer.novelty is None:
@@ -385,7 +382,6 @@ class MudraApp:
                 self._process_frame(frame)
         except Exception as e:  # ไม่ให้โปรแกรมหยุดเพราะเฟรมเดียวผิดพลาด
             self.set_status(f"ข้อผิดพลาด: {e!r}")
-            import traceback
             traceback.print_exc()
         self.ticks += 1
         if self.max_ticks and self.ticks >= self.max_ticks:
@@ -405,7 +401,7 @@ class MudraApp:
         # --- 1) จับการเคลื่อนไหว
         moving = self.motion.update(frame)
         s = self.motion.step
-        ratio = float(moving[y1 // s:y2 // s, x1 // s:x2 // s].mean()) if moving.size else 0.0
+        ratio = float(moving[y1 // s:y2 // s, x1 // s:x2 // s].mean())
         self.motion_ema = 0.6 * self.motion_ema + 0.4 * ratio
         still = self.motion_ema < config.MOTION_MOVING_RATIO
 
@@ -448,14 +444,14 @@ class MudraApp:
         self._handle_calibration(frame, roi)
 
         # --- 5) วาดผล
-        self._draw_camera(frame, moving, res, roi, kind, still)
+        self._draw_camera(frame, moving, res, roi, kind, desc["title"])
         self._draw_previews(res)
         self._draw_panel(desc, cls, conf, kind)
-        self._update_fps(ratio, still)
+        self._update_fps(still)
         self._update_gate(res)
 
     # ================================================================== drawing
-    def _draw_camera(self, frame, moving, res, roi, kind, still):
+    def _draw_camera(self, frame, moving, res, roi, kind, title):
         disp = frame.copy()
         s = self.motion.step
         mm = moving.repeat(s, 0).repeat(s, 1)[:H, :W]
@@ -489,11 +485,9 @@ class MudraApp:
             self.cv.itemconfigure(self.cv_box, state="normal")
         else:
             self.cv.itemconfigure(self.cv_box, state="hidden")
-        tag = {"ok": "นิ่ง • กำลังตรวจจับ", "moving": "กำลังเคลื่อนไหว",
+        tag = {"ok": title, "moving": "กำลังเคลื่อนไหว",
                "no_hand": "ไม่พบมือในกรอบ", "no_model": "ยังไม่มีโมเดล",
                "unknown": "ไม่พบท่านี้ในฐานข้อมูล", "bad_geometry": "ขนาดมือไม่เหมาะสม"}[kind]
-        if kind == "ok" and self.prev_desc:
-            tag = self.prev_desc
         self.cv.itemconfigure(self.cv_tag, text=" " + tag + " ")
         self.cv.coords(self.cv_tag, x1 * s, max(22, y1 * s - 4))
         bb = self.cv.bbox(self.cv_tag)
@@ -521,11 +515,9 @@ class MudraApp:
         จึงจำกัดทั้งความกว้างและความยาวไบต์ต่อบรรทัด
         """
         key = (text, font, width)
-        cache = self.__dict__.setdefault("_fit_cache", {})
-        if key in cache:
-            return cache[key]
-        fonts = self.__dict__.setdefault("_font_objs", {})
-        f = fonts.get(font) or fonts.setdefault(font, tkfont.Font(font=font))
+        if key in self._fit_cache:
+            return self._fit_cache[key]
+        f = self._font_objs.get(font) or self._font_objs.setdefault(font, tkfont.Font(font=font))
         lines = []
         for para in text.split("\n"):
             line = ""
@@ -537,13 +529,13 @@ class MudraApp:
                     lines.append(line)
                     line = word
             lines.append(line)
-        if len(cache) > 500:
-            cache.clear()
-        cache[key] = "\n".join(lines)
-        return cache[key]
+        if len(self._fit_cache) > 500:
+            self._fit_cache.clear()
+        self._fit_cache[key] = "\n".join(lines)
+        return self._fit_cache[key]
 
     def _draw_panel(self, desc, cls, conf, kind):
-        self.prev_desc = desc["title"] if kind == "ok" else None
+        recognized = kind in ("ok", "moving")
         color = C_GOLD if kind == "ok" and desc["title"] != "ไม่แน่ใจ" else C_MUTED
         if kind in ("unknown", "bad_geometry"):
             color = C_ORANGE
@@ -553,23 +545,23 @@ class MudraApp:
             self.lbl_title.configure(text=desc["title"], font=(self.fam, size, "bold"))
         self.lbl_title.configure(fg=color)
         self.lbl_sub.configure(text=desc["subtitle"])
-        recognized = kind in ("ok", "moving")
         hand = ("ลักษณะท่ามือ: " if recognized else "") + desc["hand"] if desc["hand"] else ""
         meaning = ("ความหมาย: " if recognized else "") + desc["meaning"] if desc["meaning"] else ""
         self.lbl_sentence.configure(text=self._fit(desc["sentence"], self.f_hd))
         self.lbl_hand.configure(text=self._fit(hand, self.f_body))
         self.lbl_meaning.configure(text=self._fit(meaning, self.f_body))
         wbar = self.cv_conf.winfo_width()
-        self.cv_conf.coords(self.cv_conf_bar, 0, 0, wbar * (conf if kind in ("ok", "moving") else 0), 8)
-        top = int(np.argmax(cls)) if cls is not None and kind in ("ok", "moving") else -1
+        self.cv_conf.coords(self.cv_conf_bar, 0, 0, wbar * (conf if recognized else 0), 8)
+        show = cls is not None and recognized
+        top = int(np.argmax(cls)) if show else -1
         rh = self.row_h
-        for i, (t, bg, bar, pct) in enumerate(self.prob_items):
-            p = float(cls[i]) if cls is not None and kind in ("ok", "moving") else 0.0
+        for i, (bar, pct) in enumerate(self.prob_items):
+            p = float(cls[i]) if show else 0.0
             self.cv_probs.coords(bar, 110, 2 + i * rh + 3, 110 + 330 * p, 2 + i * rh + rh - 3)
             self.cv_probs.itemconfigure(bar, fill=C_GOLD if i == top else "#6b6f7a")
             self.cv_probs.itemconfigure(pct, text=f"{p * 100:5.1f}%")
 
-    def _update_fps(self, ratio, still):
+    def _update_fps(self, still):
         now = time.time()
         dt = now - self.t_last
         self.t_last = now
@@ -632,13 +624,11 @@ class MudraApp:
         return self.class_names[max(0, self.cb_class.current())]
 
     def refresh_counts(self):
-        label = self.selected_label()
-        d = config.COLLECTED_DIR / label
+        d = config.COLLECTED_DIR / self.selected_label()
         n = len([p for p in d.iterdir() if p.suffix.lower() in config.IMAGE_EXTS]) if d.exists() else 0
         self.lbl_count.configure(text=f"เก็บแล้ว {n} ภาพ")
 
     def save_sample(self, label):
-        from mudra.io_utils import write_image_rgb
         if self.last_frame is None:
             return
         if self.demo:
@@ -721,7 +711,7 @@ class MudraApp:
         self.btn_train.configure(state="disabled", text="กำลังฝึก...")
 
         def work():
-            from mudra.trainer import run_training
+            from mudra.trainer import run_training   # โหลดเฉพาะตอนฝึก
             try:
                 meta = run_training(log=lambda s: self.msgs.put(("log", s)))
                 self.msgs.put(("done", meta))
@@ -740,9 +730,10 @@ class MudraApp:
                 text = payload.strip()
                 if text:
                     self.set_status("[ฝึกโมเดล] " + text)
-            elif kind == "done":
-                self.training = False
-                self.btn_train.configure(state="normal", text="ฝึกโมเดลใหม่")
+                continue
+            self.training = False
+            self.btn_train.configure(state="normal", text="ฝึกโมเดลใหม่")
+            if kind == "done":
                 self.load_model()
                 self._update_model_label()
                 msg = (f"ฝึกโมเดลเสร็จ: {payload['model']}\n"
@@ -752,9 +743,7 @@ class MudraApp:
                 self.set_status(msg.replace("\n", "  •  "))
                 if not self.max_ticks:
                     messagebox.showinfo("ฝึกโมเดลเสร็จแล้ว", msg)
-            elif kind == "error":
-                self.training = False
-                self.btn_train.configure(state="normal", text="ฝึกโมเดลใหม่")
+            else:  # "error"
                 self.set_status("ฝึกโมเดลไม่สำเร็จ: " + payload)
 
     def quit(self):
