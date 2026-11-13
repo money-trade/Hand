@@ -77,6 +77,7 @@ class MudraRecognizer:
             self.model = NeuralNetClassifier.from_params(params)
         nov = {k[4:]: v for k, v in d.items() if k.startswith("nov_")}
         self.novelty = NoveltyDetector.from_params(nov) if nov else None   # โมเดลเก่าไม่มีด่านนี้
+        self._tick, self._faces, self._face_age = 0, [], 0
         self.ignore_faces = True        # ตัดใบหน้าออกก่อนหามือ
         self.sensitivity = 1.0          # ตัวคูณเกณฑ์: > 1 ยอมรับง่ายขึ้น, < 1 เข้มงวดขึ้น
         self.skin_model = skin_model or SkinModel.load(config.SKIN_FILE)
@@ -89,23 +90,26 @@ class MudraRecognizer:
     def predict_proba_features(self, F):
         return self.model.predict_proba(self.transform(F)[0])
 
-    def mask_faces(self, frame_rgb):
-        """ลงสีเทากลางทับบริเวณใบหน้า (ขยายครอบหู/คาง/คอ) เพื่อไม่ให้สีผิวใบหน้าถูกนับเป็นมือ"""
+    def work_faces(self, frame_rgb, roi, work_shape):
+        """ตำแหน่งใบหน้าในพิกัดภาพทำงาน (ตรวจทุก FACE_EVERY เฟรม และจำผลไว้ FACE_HOLD เฟรม กันพลาดตอนหันหน้า)"""
         if not self.ignore_faces:
-            return frame_rgb
-        try:
-            faces = detect_faces(frame_rgb)
-        except Exception:
-            return frame_rgb
-        if not faces:
-            return frame_rgb
-        h, w = frame_rgb.shape[:2]
-        out = frame_rgb.copy()
-        for x1, y1, x2, y2 in faces:
-            fw, fh = x2 - x1, y2 - y1
-            out[max(0, int(y1 - 0.25 * fh)):min(h, int(y2 + 0.6 * fh)),
-                max(0, int(x1 - 0.2 * fw)):min(w, int(x2 + 0.2 * fw))] = 128
-        return out
+            return []
+        self._tick += 1
+        if self._tick % config.FACE_EVERY == 1 or self._tick == 1:
+            try:
+                found = detect_faces(frame_rgb)
+            except Exception:
+                found = []
+            if found:
+                self._faces, self._face_age = found, 0
+            else:
+                self._face_age += config.FACE_EVERY
+        if self._face_age > config.FACE_HOLD:
+            self._faces = []
+        x1, y1, x2, y2 = roi
+        sx, sy = work_shape[1] / max(1.0, x2 - x1), work_shape[0] / max(1.0, y2 - y1)
+        return [((fx1 - x1) * sx, (fy1 - y1) * sy, (fx2 - x1) * sx, (fy2 - y1) * sy)
+                for fx1, fy1, fx2, fy2 in self._faces]
 
     def analyze(self, frame_rgb, roi):
         """
@@ -113,10 +117,10 @@ class MudraRecognizer:
         คืน dict: status (no_hand | bad_geometry | unknown | known), reason, novelty,
                   probs/label/confidence (มีค่าเฉพาะ status = known), hand, work
         """
-        frame_rgb = self.mask_faces(frame_rgb)                          # ตัดใบหน้าออก โฟกัสแค่มือ
         small, roi_s = prepare_source(frame_rgb, roi)
         work = make_working(small, roi_s)
-        hand = extract_hand(work, self.skin_model)
+        faces = self.work_faces(frame_rgb, roi, work.shape)             # ตัดใบหน้า โฟกัสแค่มือ
+        hand = extract_hand(work, self.skin_model, faces=faces)
         out = {"status": NO_HAND, "found": hand.found, "hand": hand, "work": work, "reason": "",
                "novelty": None, "probs": None, "label": None, "confidence": 0.0}
         if not hand.found:

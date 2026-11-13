@@ -97,13 +97,46 @@ class HandResult:
     extra: dict = field(default_factory=dict)
 
 
+def remove_faces(mask, faces):
+    """
+    ตัดใบหน้าออกจาก mask สีผิว (faces = กรอบใบหน้า x1,y1,x2,y2 ในพิกัดภาพทำงาน)
+      1) ลบพิกเซลสีผิวในกรอบใบหน้า (เฉพาะสีผิว — มือที่ไม่ใช่สีผิวหรืออยู่นอกกรอบไม่ถูกแตะ)
+      2) ลบกลุ่มสีผิวที่ติดกับใบหน้าและมีศูนย์กลางอยู่ในโซนหู/คอ (ส่วนของหัวที่เหลือ)
+    มือที่อยู่ไกลจากหน้าจะไม่ถูกลบ
+    """
+    if not faces:
+        return mask
+    h, w = mask.shape
+    mask = mask.copy()
+    for x1, y1, x2, y2 in faces:
+        fw, fh = x2 - x1, y2 - y1
+        cx0, cx1 = int(max(0, x1 - 0.08 * fw)), int(min(w, x2 + 0.08 * fw))
+        cy0, cy1 = int(max(0, y1 - 0.15 * fh)), int(min(h, y2 + 0.08 * fh))
+        mask[cy0:cy1, cx0:cx1] = False
+        labels, n, areas = connected_components(mask)
+        if n == 0:
+            continue
+        # โซนหู/คอ: กว้างกว่าหน้าเล็กน้อย ลงไปใต้คางประมาณ 0.8 ของความสูงหน้า
+        zx0, zx1 = x1 - 0.3 * fw, x2 + 0.3 * fw
+        zy0, zy1 = y1 - 0.4 * fh, y2 + 0.8 * fh
+        ring = np.zeros_like(mask)
+        ring[max(0, cy0 - 3):min(h, cy1 + 3), max(0, cx0 - 3):min(w, cx1 + 3)] = True
+        ring[cy0:cy1, cx0:cx1] = False
+        for lab in np.unique(labels[ring & (labels > 0)]):
+            ys, xs = np.nonzero(labels == lab)
+            if zx0 <= xs.mean() <= zx1 and zy0 <= ys.mean() <= zy1:
+                mask[labels == lab] = False
+    return mask
+
+
 def extract_hand(work_rgb, skin_model, crop_size=config.CROP_SIZE,
-                 min_skin_ratio=config.MIN_SKIN_RATIO):
+                 min_skin_ratio=config.MIN_SKIN_RATIO, faces=None):
     """หาบริเวณมือในภาพทำงาน (ภาพ ROI ที่ปรับขนาดแล้ว) แล้ว crop ให้พร้อมสกัดฟีเจอร์"""
     h, w = work_rgb.shape[:2]
     smooth = box_blur(work_rgb, 1)
     raw_mask = skin_model.mask(smooth)
     mask = closing(opening(raw_mask, 1), 2)
+    mask = remove_faces(mask, faces)
 
     labels, n, areas = connected_components(mask)
     if n == 0:
