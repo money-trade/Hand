@@ -97,24 +97,109 @@ class HandResult:
     extra: dict = field(default_factory=dict)
 
 
+def remove_faces(mask, faces):
+    """
+    ตัดใบหน้าออกจาก mask สีผิว (faces = กรอบใบหน้า x1,y1,x2,y2 ในพิกัดภาพทำงาน)
+      1) ลบพิกเซลสีผิวในกรอบใบหน้า (เฉพาะสีผิว — มือที่ไม่ใช่สีผิวหรืออยู่นอกกรอบไม่ถูกแตะ)
+      2) ลบกลุ่มสีผิวที่ติดกับใบหน้าและมีศูนย์กลางอยู่ในโซนหู/คอ (ส่วนของหัวที่เหลือ)
+    มือที่อยู่ไกลจากหน้าจะไม่ถูกลบ
+    """
+    if not faces:
+        return mask
+    h, w = mask.shape
+    mask = mask.copy()
+    for x1, y1, x2, y2 in faces:
+        fw, fh = x2 - x1, y2 - y1
+        cx0, cx1 = int(max(0, x1 - 0.08 * fw)), int(min(w, x2 + 0.08 * fw))
+        cy0, cy1 = int(max(0, y1 - 0.15 * fh)), int(min(h, y2 + 0.08 * fh))
+        mask[cy0:cy1, cx0:cx1] = False
+        labels, n, areas = connected_components(mask)
+        if n == 0:
+            continue
+        # โซนหู/คอ: กว้างกว่าหน้าเล็กน้อย ลงไปใต้คางประมาณ 0.8 ของความสูงหน้า
+        zx0, zx1 = x1 - 0.3 * fw, x2 + 0.3 * fw
+        zy0, zy1 = y1 - 0.4 * fh, y2 + 0.8 * fh
+        ring = np.zeros_like(mask)
+        ring[max(0, cy0 - 3):min(h, cy1 + 3), max(0, cx0 - 3):min(w, cx1 + 3)] = True
+        ring[cy0:cy1, cx0:cx1] = False
+        for lab in np.unique(labels[ring & (labels > 0)]):
+            ys, xs = np.nonzero(labels == lab)
+            if zx0 <= xs.mean() <= zx1 and zy0 <= ys.mean() <= zy1:
+                mask[labels == lab] = False
+    return mask
+
+
+def cut_wrist(hand, border=2, min_arm_frac=0.25, min_keep=0.55):
+    """
+    ตัดแขนส่วนที่เกินข้อมือทิ้ง (เฉพาะเมื่อแขนพาดมาจากขอบภาพ)
+      หาแกนหลักของมือ -> โปรไฟล์ความกว้างตามแกน -> ข้อมือ = จุดแคบสุดหลังฝ่ามือ (ด้านที่ติดขอบภาพ)
+    ถ้าไม่แน่ใจ (ไม่ติดขอบ / แขนสั้น / จะตัดทิ้งมากเกิน) คืน mask เดิม
+    """
+    ys, xs = np.nonzero(hand)
+    n = len(xs)
+    if n < 60:
+        return hand
+    h, w = hand.shape
+    p = np.stack([xs, ys], 1).astype(np.float32)
+    c = p.mean(0)
+    d = p - c
+    sxx, syy, sxy = (d[:, 0] ** 2).mean(), (d[:, 1] ** 2).mean(), (d[:, 0] * d[:, 1]).mean()
+    ang = 0.5 * np.arctan2(2 * sxy, sxx - syy)                 # แกนหลัก (ค่าเฉพาะ 2x2 แบบสูตรปิด)
+    v = np.array([np.cos(ang), np.sin(ang)], np.float32)
+    t = d @ v
+    near = (xs < border) | (ys < border) | (xs >= w - border) | (ys >= h - border)
+    if near.sum() < 5:
+        return hand                                             # แขนไม่ได้พาดมาจากขอบ
+    if t[near].mean() < 0:                                      # ให้ด้านแขนอยู่ที่ t มาก
+        t, v = -t, -v
+    t0, t1 = float(t.min()), float(t.max())
+    if t1 - t0 < 12:
+        return hand
+    nb = int(min(40, max(8, (t1 - t0) / 2)))
+    idx = np.minimum(((t - t0) / (t1 - t0) * nb).astype(int), nb - 1)
+    prof = np.bincount(idx, minlength=nb).astype(np.float32)   # ความกว้าง ~ จำนวนพิกเซลต่อช่วง
+    prof = np.convolve(np.pad(prof, 1, mode="edge"), np.ones(3) / 3, mode="valid")
+    palm = int(np.argmax(prof[: int(nb * (1 - min_arm_frac))]))
+    after = prof[palm + 1:]
+    if len(after) < 2:
+        return hand
+    wrist = palm + 1 + int(np.argmin(after))
+    if prof[wrist] > 0.8 * prof[palm] or wrist >= nb - 1:
+        return hand                                             # ไม่มีคอดที่ข้อมือ
+    keep = idx <= wrist
+    if keep.sum() < min_keep * n:
+        return hand
+    out = np.zeros_like(hand)
+    out[ys[keep], xs[keep]] = True
+    return out
+
+
 def extract_hand(work_rgb, skin_model, crop_size=config.CROP_SIZE,
-                 min_skin_ratio=config.MIN_SKIN_RATIO):
+                 min_skin_ratio=config.MIN_SKIN_RATIO, faces=None, motion=None):
     """หาบริเวณมือในภาพทำงาน (ภาพ ROI ที่ปรับขนาดแล้ว) แล้ว crop ให้พร้อมสกัดฟีเจอร์"""
     h, w = work_rgb.shape[:2]
     smooth = box_blur(work_rgb, 1)
     raw_mask = skin_model.mask(smooth)
     mask = closing(opening(raw_mask, 1), 2)
+    mask = remove_faces(mask, faces)
 
     labels, n, areas = connected_components(mask)
     if n == 0:
         return HandResult(False, mask=mask)
 
     # เก็บเฉพาะกลุ่มใหญ่ (มือ/แขน) สูงสุด 3 กลุ่ม — ตัดสิ่งรบกวนสีคล้ายผิว
-    order = np.argsort(-areas)
-    largest = areas[order[0]]
+    # ถ้ามี motion mask (ภาพทำงานขนาดเดียวกัน) ให้กลุ่มที่เคลื่อนไหวได้คะแนนสูงขึ้น — มือมักขยับ ส่วนฉากหลังนิ่ง
+    score = areas.astype(np.float32)
+    if motion is not None and motion.shape == labels.shape:
+        mov = np.bincount(labels[motion & (labels > 0)], minlength=len(areas) + 1)[1:]
+        score = score * (1.0 + 2.0 * np.minimum(mov / np.maximum(areas, 1), 1.0))
+    order = np.argsort(-score)
+    largest = areas.max()
     keep = [i + 1 for i in order[:3]
             if areas[i] >= max(0.15 * largest, 0.004 * h * w)]
     hand = np.isin(labels, keep)
+    if config.CUT_WRIST:
+        hand = cut_wrist(hand)
     ratio = float(hand.mean())
     if ratio < min_skin_ratio:
         return HandResult(False, mask=hand, skin_ratio=ratio)
