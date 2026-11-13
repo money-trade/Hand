@@ -14,6 +14,7 @@ import numpy as np
 from . import config
 from .dataset import make_working, prepare_source
 from .features import extract_features
+from .io_utils import detect_faces
 from .models import KNNClassifier, NeuralNetClassifier
 from .novelty import NoveltyDetector
 from .preprocessing import PCA, StandardScaler
@@ -76,6 +77,7 @@ class MudraRecognizer:
             self.model = NeuralNetClassifier.from_params(params)
         nov = {k[4:]: v for k, v in d.items() if k.startswith("nov_")}
         self.novelty = NoveltyDetector.from_params(nov) if nov else None   # โมเดลเก่าไม่มีด่านนี้
+        self.ignore_faces = True        # ตัดใบหน้าออกก่อนหามือ
         self.sensitivity = 1.0          # ตัวคูณเกณฑ์: > 1 ยอมรับง่ายขึ้น, < 1 เข้มงวดขึ้น
         self.skin_model = skin_model or SkinModel.load(config.SKIN_FILE)
 
@@ -87,12 +89,31 @@ class MudraRecognizer:
     def predict_proba_features(self, F):
         return self.model.predict_proba(self.transform(F)[0])
 
+    def mask_faces(self, frame_rgb):
+        """ลงสีเทากลางทับบริเวณใบหน้า (ขยายครอบหู/คาง/คอ) เพื่อไม่ให้สีผิวใบหน้าถูกนับเป็นมือ"""
+        if not self.ignore_faces:
+            return frame_rgb
+        try:
+            faces = detect_faces(frame_rgb)
+        except Exception:
+            return frame_rgb
+        if not faces:
+            return frame_rgb
+        h, w = frame_rgb.shape[:2]
+        out = frame_rgb.copy()
+        for x1, y1, x2, y2 in faces:
+            fw, fh = x2 - x1, y2 - y1
+            out[max(0, int(y1 - 0.25 * fh)):min(h, int(y2 + 0.6 * fh)),
+                max(0, int(x1 - 0.2 * fw)):min(w, int(x2 + 0.2 * fw))] = 128
+        return out
+
     def analyze(self, frame_rgb, roi):
         """
         วิเคราะห์ 1 เฟรม  roi = (x1, y1, x2, y2) ในพิกัดของ frame_rgb
         คืน dict: status (no_hand | bad_geometry | unknown | known), reason, novelty,
                   probs/label/confidence (มีค่าเฉพาะ status = known), hand, work
         """
+        frame_rgb = self.mask_faces(frame_rgb)                          # ตัดใบหน้าออก โฟกัสแค่มือ
         small, roi_s = prepare_source(frame_rgb, roi)
         work = make_working(small, roi_s)
         hand = extract_hand(work, self.skin_model)
