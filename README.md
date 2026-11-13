@@ -32,6 +32,7 @@
 | หน้าจอโปรแกรม | `tkinter` (มากับ Python) | แปลงภาพเป็น PPM เอง ไม่ใช้ PIL |
 | อาร์เรย์ตัวเลข | `numpy` | ใช้แค่ บวก/ลบ/คูณเมทริกซ์ |
 | **เปิดกล้อง + อ่าน/เขียนไฟล์รูป JPG/PNG** | `opencv-python` | **ใช้เฉพาะ I/O** ใน `mudra/io_utils.py` ไฟล์เดียว |
+| **ตัดใบหน้าออก (โฟกัสแค่มือ)** | Haar cascade ของ `opencv-python` | `detect_faces()` ใน `mudra/io_utils.py` — ลงสีเทาทับใบหน้าก่อนหามือ (ปิดได้ด้วย `ignore_faces = False`) |
 
 > ไม่ใช้ MediaPipe, scikit-learn, TensorFlow, Keras, PyTorch, PIL, scikit-image, NLTK, PyThaiNLP
 

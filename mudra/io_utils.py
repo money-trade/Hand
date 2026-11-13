@@ -45,6 +45,31 @@ def write_image_rgb(path, rgb):
     buf.tofile(path)
 
 
+_FACE = None
+
+
+def detect_faces(rgb, max_width=320):
+    """
+    หาตำแหน่งใบหน้า (Haar cascade ที่มากับ OpenCV) เพื่อ "ตัดใบหน้าออก" ไม่ให้ถูกนับเป็นมือ
+    คืน list ของ (x1, y1, x2, y2) ในพิกัดของ rgb — ถ้าใช้ไม่ได้คืน list ว่าง
+    """
+    global _FACE
+    if cv2 is None:
+        return []
+    if _FACE is None:
+        _FACE = cv2.CascadeClassifier(os.path.join(cv2.data.haarcascades,
+                                                   "haarcascade_frontalface_default.xml"))
+    if _FACE.empty():
+        return []
+    h, w = rgb.shape[:2]
+    s = min(1.0, max_width / float(w))
+    small = rgb if s == 1.0 else cv2.resize(rgb, (int(w * s), int(h * s)))
+    gray = cv2.cvtColor(np.ascontiguousarray(small), cv2.COLOR_RGB2GRAY)
+    faces = _FACE.detectMultiScale(gray, scaleFactor=1.15, minNeighbors=5,
+                                   minSize=(int(24), int(24)))
+    return [(int(x / s), int(y / s), int((x + fw) / s), int((y + fh) / s)) for x, y, fw, fh in faces]
+
+
 class Camera:
     """อ่านเฟรมจากเว็บแคมใน thread แยก (เก็บเฉพาะเฟรมล่าสุด เพื่อไม่ให้ภาพหน่วง)"""
 
