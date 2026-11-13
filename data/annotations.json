@@ -1,0 +1,15 @@
+{
+  "description": "ป้ายกำกับ (label) และกรอบบริเวณมือ (roi = [x1, y1, x2, y2] หน่วยพิกเซลของภาพต้นฉบับ) ของรูปในโฟลเดอร์ Raw Data — ROI ตัดส่วนใบหน้าออก เพื่อให้เหมือนกรอบ ROI บนหน้าจอตอนใช้งานจริง ส่วน exclude คือกรอบผิวที่ไม่ใช่มือ (คอ/คาง) ที่อยู่ติดกับนิ้ว จะถูกทาสีเทาทิ้งก่อนประมวลผล (data cleaning)",
+  "images": [
+    {"file": "abhaya.jpg",          "label": "abhaya",          "roi": [380, 190, 800, 820]},
+    {"file": "chin.jpg",            "label": "chin",            "roi": [300, 175, 1060, 540]},
+    {"file": "dharmachakra.jpg",    "label": "dharmachakra",    "roi": [140, 40, 1010, 900]},
+    {"file": "ksepana.jpg",         "label": "ksepana",         "roi": [330, 170, 960, 900]},
+    {"file": "mudra_R.jpg",         "label": "mudra_R",         "roi": [380, 120, 830, 830],
+     "exclude": [[470, 0, 603, 205], [652, 0, 900, 205], [603, 0, 652, 147]]},
+    {"file": "namaskara_mudra.jpg", "label": "namaskara_mudra", "roi": [410, 100, 950, 770]},
+    {"file": "vitarka_mudra.jpg",   "label": "vitarka_mudra",   "roi": [400, 40, 820, 700],
+     "exclude": [[470, 0, 900, 50], [470, 50, 596, 150], [470, 50, 612, 100],
+                 [665, 50, 900, 100], [752, 100, 900, 185]]}
+  ]
+}
