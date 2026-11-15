@@ -122,15 +122,16 @@ class TranscriptBuilder:
     """
 
     def __init__(self, class_names, stable_frames=config.STABLE_FRAMES,
-                 conf_threshold=config.CONF_THRESHOLD):
+                 conf_threshold=config.CONF_THRESHOLD, vote_frac=config.VOTE_FRACTION):
         self.class_names = list(class_names)
         self.stable_frames = stable_frames
         self.conf_threshold = conf_threshold
+        self.vote_frac = vote_frac
         self.reset()
 
     def reset(self):
         self.tokens = []             # [(label, confidence, timestamp)]
-        self.candidate, self.count = None, 0
+        self.window = []             # [(label, confidence, still)] ของ stable_frames เฟรมล่าสุด
         self.last_label = None
         self.blank_run = 0
         self.emissions = []
@@ -146,23 +147,27 @@ class TranscriptBuilder:
             if len(self.emissions) > 5000:
                 self.emissions = self.emissions[-5000:]
         if state_label == NONE_TOKEN:
-            self.candidate, self.count = None, 0
+            self.window = []
             self.blank_run = 0 if hand_present else self.blank_run + 1
             if self.blank_run >= 3:            # เอามือออกจริง ≥ 3 เฟรม = ตัวคั่น (ทำท่าเดิมซ้ำได้)
                 self.last_label = None
             return None
         self.blank_run = 0
-        if confidence < self.conf_threshold or not is_still:
-            self.count = max(0, self.count - 1)
+        # เฉลี่ยผลหลายเฟรมก่อนตัดสิน: เก็บหน้าต่าง stable_frames เฟรมล่าสุด แล้ว "โหวต"
+        # ยอมรับเมื่อเฟรมส่วนใหญ่ (>= vote_frac) เป็นปางเดียวกัน + นิ่ง + มั่นใจ และความมั่นใจเฉลี่ยผ่านเกณฑ์
+        # เฟรมที่หลุดเป็นครั้งคราวจึงไม่ทำให้ต้องเริ่มนับใหม่ (ต่างจากแบบนับต่อเนื่อง)
+        self.window.append((state_label, float(confidence), bool(is_still)))
+        if len(self.window) > self.stable_frames:
+            self.window.pop(0)
+        if len(self.window) < self.stable_frames or state_label == self.last_label:
             return None
-        if state_label == self.candidate:
-            self.count += 1
-        else:
-            self.candidate, self.count = state_label, 1
-        if self.count >= self.stable_frames and state_label != self.last_label:
+        good = [c for (l, c, st) in self.window
+                if l == state_label and st and c >= self.conf_threshold]
+        if len(good) >= self.vote_frac * self.stable_frames and float(np.mean(good)) >= self.conf_threshold:
             self.last_label = state_label
-            tok = (state_label, float(confidence), time.time())
+            tok = (state_label, float(np.mean(good)), time.time())
             self.tokens.append(tok)
+            self.window = []
             return tok
         return None
 
