@@ -97,7 +97,7 @@ python predict_image.py my_hand.jpg --sensitivity 1.5
 รันเทสต์ (ตัดหน้า / ตัดแขน / เลือกมือตามการเคลื่อนไหว)
 
 ```bash
-python tests/test_face_removal.py
+python -m unittest discover -s tests -v
 ```
 
 ### การใช้งานหน้าจอ
