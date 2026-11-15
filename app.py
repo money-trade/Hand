@@ -86,6 +86,7 @@ class MudraApp:
         self.nlg = ThaiTextGenerator(self.info)
         self.skin = SkinModel.load(config.SKIN_FILE)
         self.recognizer = None
+        self.hand_only = config.HAND_ONLY_MOTION and not demo   # โฟกัสเฉพาะมือที่ขยับ (กล้องสด)
         self.class_names = class_names_from_info()
         self.load_model()
 
@@ -119,7 +120,7 @@ class MudraApp:
         if config.MODEL_FILE.exists():
             try:
                 self.recognizer = MudraRecognizer(skin_model=self.skin)
-                self.recognizer.require_motion = config.HAND_ONLY_MOTION and not self.demo   # กล้องสด: สนใจเฉพาะมือที่ขยับ
+                self.recognizer.require_motion = self.hand_only   # กล้องสด: สนใจเฉพาะมือที่ขยับ
                 self.class_names = self.recognizer.class_names
             except Exception as e:  # ไฟล์เสีย / เวอร์ชันไม่ตรง
                 self.recognizer = None
@@ -286,6 +287,8 @@ class MudraApp:
         self.lbl_count = tk.Label(ctl, text="", font=self.f_small, fg=C_MUTED, bg=C_BG)
         self.lbl_count.pack(side="left", padx=6)
         self.btn_train = self._button(ctl, "ฝึกโมเดลใหม่", self.start_training, C_GOLD, "#1b1b1b")
+        self.btn_hand_only = self._button(ctl, "", self.toggle_hand_only)
+        self._refresh_hand_only_button()
         self._button(ctl, "ปรับเทียบสีผิว", self.start_calibration)
         self._button(ctl, "สีผิวค่าเริ่มต้น", self.reset_skin)
         self._button(ctl, "ล้างข้อความ", self.clear_transcript)
@@ -303,6 +306,26 @@ class MudraApp:
                         "ยังไม่มีโมเดล — กด 'ฝึกโมเดลใหม่' หรือรัน python train.py")
         self._update_model_label()
         self._set_sensitivity(self.sens_var.get())
+
+    def toggle_hand_only(self):
+        """สลับโหมด 'โฟกัสเฉพาะมือที่ขยับ' (เปิด = ไม่นับใบหน้า/คอที่นั่งนิ่ง ต้องโบกมือเข้ากรอบก่อน)"""
+        self.hand_only = not self.hand_only
+        if self.recognizer is not None:
+            self.recognizer.require_motion = self.hand_only
+            self.recognizer._track, self.recognizer._lost = None, 0     # เริ่มติดตามใหม่
+        self._refresh_hand_only_button()
+        self.set_status("โหมดโฟกัสเฉพาะมือที่ขยับ: เปิด — โบกมือเข้ากรอบเพื่อเริ่มจับ" if self.hand_only else
+                        "โหมดโฟกัสเฉพาะมือที่ขยับ: ปิด — จับทุกวัตถุสีผิวในกรอบ (ใบหน้าอาจถูกนับ)")
+
+    def _refresh_hand_only_button(self):
+        on = self.hand_only
+        self.btn_hand_only.configure(text="เฉพาะมือที่ขยับ: " + ("เปิด" if on else "ปิด"),
+                                     bg=C_GREEN if on else C_CARD, fg="#111" if on else C_TEXT)
+
+    def _wave_hint(self):
+        """ข้อความช่วยเหลือเมื่อเปิดโหมดมือที่ขยับ แต่ยังไม่มีมือถูกติดตาม"""
+        r = self.recognizer
+        return bool(self.hand_only and r is not None and r.require_motion and r._track is None)
 
     def _preview(self, parent, title):
         f = tk.Frame(parent, bg=C_PANEL, padx=6, pady=4)
@@ -487,7 +510,8 @@ class MudraApp:
         else:
             self.cv.itemconfigure(self.cv_box, state="hidden")
         tag = {"ok": title, "moving": "กำลังเคลื่อนไหว",
-               "no_hand": "ไม่พบมือในกรอบ", "no_model": "ยังไม่มีโมเดล",
+               "no_hand": ("โบกมือเข้ากรอบเพื่อเริ่มจับ" if self._wave_hint() else "ไม่พบมือในกรอบ"),
+               "no_model": "ยังไม่มีโมเดล",
                "unknown": "ไม่พบท่านี้ในฐานข้อมูล", "bad_geometry": "ขนาดมือไม่เหมาะสม"}[kind]
         self.cv.itemconfigure(self.cv_tag, text=" " + tag + " ")
         self.cv.coords(self.cv_tag, x1 * s, max(22, y1 * s - 4))
@@ -579,7 +603,7 @@ class MudraApp:
         score = res.get("novelty") if res else None
         if score is None:
             self.cv_nov.coords(self.cv_nov_bar, 0, 0, 0, 14)
-            msg = {NO_HAND: "ยังไม่พบมือ", BAD_GEOMETRY: "ขนาดมือไม่เหมาะสม"}.get(res["status"] if res else None,
+            msg = {NO_HAND: "โบกมือเข้ากรอบเพื่อเริ่มจับ" if self._wave_hint() else "ยังไม่พบมือ", BAD_GEOMETRY: "ขนาดมือไม่เหมาะสม"}.get(res["status"] if res else None,
                                                                                 "-")
             if self.recognizer is not None and self.recognizer.novelty is None:
                 msg = "โมเดลเก่า: ไม่มีด่านนี้"
