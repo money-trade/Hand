@@ -15,3 +15,6 @@ desktop.ini
 
 # Runtime output
 transcripts/
+
+# Model backups (generated on every training run)
+models/history/
