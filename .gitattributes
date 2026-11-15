@@ -1,0 +1,16 @@
+# ให้ git จัดการ line ending เอง: เก็บใน repo เป็น LF เสมอ ไม่ว่าใช้ Windows/Mac/Linux
+* text=auto
+
+# ไฟล์ข้อความ: ใช้ LF ทั้งใน repo และในเครื่อง (กันคำเตือน LF/CRLF และ diff เพี้ยน)
+*.py   text eol=lf
+*.md   text eol=lf
+*.json text eol=lf
+*.txt  text eol=lf
+.gitignore     text eol=lf
+.gitattributes text eol=lf
+
+# ไฟล์ไบนารี: ห้ามแปลง line ending และไม่ต้อง diff เป็นข้อความ
+*.npz binary
+*.png binary
+*.jpg binary
+*.jpeg binary
