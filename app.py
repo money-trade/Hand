@@ -534,7 +534,7 @@ class MudraApp:
 
     def _fit(self, text, font, width=470, max_bytes=180):
         """
-        ตัดบรรทัดภาษาไทยเองที่ช่องว่าง (วัดความกว้างด้วยฟอนต์จริง) แทนการให้ Tk ตัดบรรทัด
+        ตัดบรรทัดภาษาไทยเองที่ช่องว่าง โดยวัดความกว้างด้วยฟอนต์จริง แทนการให้ Tk ตัดบรรทัด
         เหตุผล: Tk บน Windows วาดข้อความทีละช่วง ~200 ไบต์ (UTF-8, อักษรไทย = 3 ไบต์)
         ถ้ารอยต่อช่วงตกกลางพยางค์ สระบน/วรรณยุกต์จะแยกเป็นวงกลมประ (เช่น "ขึ้น", "ชูนิ้วชี้")
         จึงจำกัดทั้งความกว้างและความยาวไบต์ต่อบรรทัด
@@ -565,7 +565,7 @@ class MudraApp:
         if kind in ("unknown", "bad_geometry"):
             color = C_ORANGE
         if self.lbl_title.cget("text") != desc["title"]:
-            n = len(desc["title"])          # ชื่อยาวใช้ฟอนต์เล็กลง ให้อยู่บรรทัดเดียวเสมอ
+            n = len(desc["title"])          # ชื่อยาวใช้ฟอนต์เล็กลง และให้อยู่บรรทัดเดียวเสมอ
             size = self.h1_size if n <= 28 else (self.h1_size - 4 if n <= 36 else self.h1_size - 7)
             self.lbl_title.configure(text=desc["title"], font=(self.fam, size, "bold"))
         self.lbl_title.configure(fg=color)
