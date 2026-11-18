@@ -95,7 +95,7 @@ class MudraRecognizer:
         return self.model.predict_proba(self.transform(F)[0])
 
     def work_faces(self, frame_rgb, roi, work_shape):
-        """ตำแหน่งใบหน้าในพิกัดภาพทำงาน (ตรวจทุก FACE_EVERY เฟรม และจำผลไว้ FACE_HOLD เฟรม กันพลาดตอนหันหน้า)"""
+        """ตำแหน่งใบหน้าในพิกัดภาพทำงาน ที่จะมีตรวจทุก FACE_EVERY เฟรม และจำผลไว้ FACE_HOLD เฟรม เผื่อกันพลาดตอนหันหน้า"""
         if not self.ignore_faces:
             return []
         self._tick += 1
