@@ -37,6 +37,7 @@ from mudra.pipeline import BAD_GEOMETRY, KNOWN, NO_HAND, UNKNOWN, MudraRecognize
 from mudra.segmentation import SkinModel
 
 W, H = 640, 480
+TOP_K = 7          # จำนวนปางที่แสดงในแถบความน่าจะเป็น (เรียงจากมากไปน้อย)
 
 C_BG = "#17181c"
 C_PANEL = "#23252c"
@@ -241,22 +242,23 @@ class MudraApp:
                                     height=2 if self.compact else 3, justify="left", anchor="nw")
         self.lbl_meaning.pack(anchor="w", fill="x", pady=(2, 4))
 
-        tk.Label(right, text="ความน่าจะเป็นของแต่ละปาง (หลังกรองด้วย HMM)", font=self.f_small,
-                 fg=C_MUTED, bg=C_PANEL).pack(anchor="w")
+        # แสดงเฉพาะ TOP_K ปางที่น่าจะเป็นที่สุด (เรียงใหม่ทุกเฟรม) — มีหลายสิบปางจึงแสดงครบไม่พอที่
+        self.top_k = min(TOP_K, len(self.class_names))
+        tk.Label(right, text=f"ความน่าจะเป็น {self.top_k} อันดับแรก (จาก {len(self.class_names)} ปาง, กรองด้วย HMM)",
+                 font=self.f_small, fg=C_MUTED, bg=C_PANEL).pack(anchor="w")
         rh = self.row_h
-        self.cv_probs = tk.Canvas(right, height=rh * len(self.class_names) + 4, bg=C_PANEL,
-                                  highlightthickness=0)
+        self.cv_probs = tk.Canvas(right, height=rh * self.top_k + 4, bg=C_PANEL, highlightthickness=0)
         self.cv_probs.pack(fill="x", pady=(2, 6))
         self.prob_items = []
-        for i, c in enumerate(self.class_names):
+        for i in range(self.top_k):
             y = 2 + i * rh
-            self.cv_probs.create_text(0, y + rh / 2, anchor="w", text=self.nlg.short(c),
-                                      fill=C_TEXT, font=self.f_small)
+            name = self.cv_probs.create_text(0, y + rh / 2, anchor="w", text="", fill=C_TEXT,
+                                             font=self.f_small)
             self.cv_probs.create_rectangle(110, y + 3, 440, y + rh - 3, fill=C_CARD, outline="")
             bar = self.cv_probs.create_rectangle(110, y + 3, 110, y + rh - 3, fill=C_GOLD, outline="")
             pct = self.cv_probs.create_text(500, y + rh / 2, anchor="e", text="", fill=C_MUTED,
                                             font=self.f_small)
-            self.prob_items.append((bar, pct))
+            self.prob_items.append((name, bar, pct))
 
         tk.Label(right, text="ข้อความที่ถอดได้ (Transcript)", font=self.f_hd, fg=C_TEXT,
                  bg=C_PANEL).pack(anchor="w")
@@ -312,7 +314,7 @@ class MudraApp:
         self.hand_only = not self.hand_only
         if self.recognizer is not None:
             self.recognizer.require_motion = self.hand_only
-            self.recognizer._track, self.recognizer._lost = None, 0     # เริ่มติดตามใหม่
+            self.recognizer.reset_tracking()                              # เริ่มติดตามใหม่
         self._refresh_hand_only_button()
         self.set_status("โหมดโฟกัสเฉพาะมือที่ขยับ: เปิด — โบกมือเข้ากรอบเพื่อเริ่มจับ" if self.hand_only else
                         "โหมดโฟกัสเฉพาะมือที่ขยับ: ปิด — จับทุกวัตถุสีผิวในกรอบ (ใบหน้าอาจถูกนับ)")
@@ -392,6 +394,8 @@ class MudraApp:
         if x2 - x1 >= 80 and y2 - y1 >= 80:
             self.roi = [x1, y1, x2, y2]
             self.hmm.reset()
+            if self.recognizer is not None:
+                self.recognizer.reset_tracking()     # มือที่ติดตามอยู่เป็นของกรอบเดิม
             self.set_status(f"ตั้งกรอบ ROI ใหม่: {self.roi}")
 
     def current_roi(self):
@@ -578,13 +582,19 @@ class MudraApp:
         wbar = self.cv_conf.winfo_width()
         self.cv_conf.coords(self.cv_conf_bar, 0, 0, wbar * (conf if recognized else 0), 8)
         show = cls is not None and recognized
-        top = int(np.argmax(cls)) if show else -1
+        order = np.argsort(-cls)[: self.top_k] if show else []
         rh = self.row_h
-        for i, (bar, pct) in enumerate(self.prob_items):
-            p = float(cls[i]) if show else 0.0
-            self.cv_probs.coords(bar, 110, 2 + i * rh + 3, 110 + 330 * p, 2 + i * rh + rh - 3)
-            self.cv_probs.itemconfigure(bar, fill=C_GOLD if i == top else "#6b6f7a")
-            self.cv_probs.itemconfigure(pct, text=f"{p * 100:5.1f}%")
+        for row, (name, bar, pct) in enumerate(self.prob_items):
+            if row < len(order):
+                c = int(order[row])
+                p = float(cls[c])
+                label = self.nlg.short(self.class_names[c])
+            else:
+                p, label = 0.0, ""
+            self.cv_probs.itemconfigure(name, text=label)
+            self.cv_probs.coords(bar, 110, 2 + row * rh + 3, 110 + 330 * p, 2 + row * rh + rh - 3)
+            self.cv_probs.itemconfigure(bar, fill=C_GOLD if row == 0 else "#6b6f7a")
+            self.cv_probs.itemconfigure(pct, text=f"{p * 100:5.1f}%" if label else "")
 
     def _update_fps(self, still):
         now = time.time()
@@ -621,8 +631,8 @@ class MudraApp:
     def _append_token(self, tok):
         self.txt.insert("end", self.nlg.token_line(tok) + "\n")
         self.txt.see("end")
-        self.lbl_summary.configure(text=self._fit(self.nlg.summarize([t[0] for t in self.transcript.tokens]),
-                                                  self.f_body))
+        self.lbl_summary.configure(text=self._fit(self.nlg.summarize([t[0] for t in self.transcript.tokens],
+                                                                     max_items=5), self.f_body))
 
     def clear_transcript(self):
         self.transcript.reset()

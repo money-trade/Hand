@@ -1,5 +1,5 @@
 {
-  "description": "ป้ายกำกับ (label) และกรอบบริเวณมือ (roi = [x1, y1, x2, y2] หน่วยพิกเซลของภาพต้นฉบับ) ของรูปในโฟลเดอร์ Raw Data — ROI ตัดส่วนใบหน้าออก เพื่อให้เหมือนกรอบ ROI บนหน้าจอตอนใช้งานจริง ส่วน exclude คือกรอบผิวที่ไม่ใช่มือ (คอ/คาง) ที่อยู่ติดกับนิ้ว จะถูกทาสีเทาทิ้งก่อนประมวลผล (data cleaning)",
+  "description": "ป้ายกำกับ (label) และกรอบบริเวณมือ (roi = [x1, y1, x2, y2] หน่วยพิกเซลของภาพต้นฉบับ) ของรูปในโฟลเดอร์ Raw Data — ROI ตัดส่วนใบหน้าออก เพื่อให้เหมือนกรอบ ROI บนหน้าจอตอนใช้งานจริง ส่วน exclude คือกรอบผิวที่ไม่ใช่มือ (คอ/คาง/เสื้อ) ที่อยู่ติดกับนิ้ว จะถูกทาสีเทาทิ้งก่อนประมวลผล และ skin คือช่วงสีผิวเฉพาะภาพ (ใช้เมื่อเสื้อ/ฉากหลังมีสีคล้ายผิว) ระบบจะหามือด้วยช่วงนี้แล้วทาสีเทาทุกอย่างที่ไม่ใช่มือ (data cleaning)",
   "images": [
     {"file": "abhaya.jpg",          "label": "abhaya",          "roi": [380, 190, 800, 820]},
     {"file": "chin.jpg",            "label": "chin",            "roi": [300, 175, 1060, 540]},
@@ -10,6 +10,32 @@
     {"file": "namaskara_mudra.jpg", "label": "namaskara_mudra", "roi": [410, 100, 950, 770]},
     {"file": "vitarka_mudra.jpg",   "label": "vitarka_mudra",   "roi": [400, 40, 820, 700],
      "exclude": [[470, 0, 900, 50], [470, 50, 596, 150], [470, 50, 612, 100],
-                 [665, 50, 900, 100], [752, 100, 900, 185]]}
+                 [665, 50, 900, 100], [752, 100, 900, 185]]},
+    {"file": "Bhudi.jpg",         "label": "Bhudi",         "roi": [128, 384, 1088, 922]},
+    {"file": "Bronchial.jpg",     "label": "Bronchial",     "roi": [192, 486, 1088, 973]},
+    {"file": "Dyani.jpg",         "label": "Dyani",         "roi": [110, 839, 2164, 1943],
+     "skin": {"cr": [137, 180]}, "exclude": [[618, 1148, 1303, 1413]]},
+    {"file": "Ganesh.jpg",        "label": "Ganesh",        "roi": [0, 994, 1877, 2208],
+     "skin": {"cr": [140, 180]}},
+    {"file": "Garuda.jpg",        "label": "Garuda",        "roi": [66, 486, 2208, 2031]},
+    {"file": "Hakini.jpg",        "label": "Hakini",        "roi": [66, 596, 2208, 2142],
+     "skin": {"cr": [139, 180]}},
+    {"file": "Jnana.jpg",         "label": "Jnana",         "roi": [221, 530, 1590, 1722],
+     "skin": {"cr": [142, 180]}},
+    {"file": "Kalesvera.jpg",     "label": "Kalesvera",     "roi": [748, 359, 2244, 2543]},
+    {"file": "Lotus.jpg",         "label": "Lotus",         "roi": [449, 419, 2453, 2453],
+     "skin": {"cr": [142, 180]}},
+    {"file": "Pushan.jpg",        "label": "Pushan",        "roi": [192, 486, 1152, 973]},
+    {"file": "Shivalinga.jpg",    "label": "Shivalinga",    "roi": [359, 419, 2394, 2453]},
+    {"file": "Ushas.jpg",         "label": "Ushas",         "roi": [658, 1137, 2334, 2094],
+     "skin": {"cr": [142, 180]}},
+    {"file": "Uttarabadhi.jpg",   "label": "Uttarabadhi",   "roi": [898, 987, 2094, 2214],
+     "skin": {"cr": [142, 180]}},
+    {"file": "Vajra.jpg",         "label": "Vajra",         "roi": [658, 1137, 2244, 2214]},
+    {"file": "Vajrapradama.jpg",  "label": "Vajrapradama",  "roi": [449, 389, 2753, 1915],
+     "skin": {"cr": [138, 180]}},
+    {"file": "Varuna.jpg",        "label": "Varuna",        "roi": [658, 479, 1855, 2543]},
+    {"file": "Vayu.jpg",          "label": "Vayu",          "roi": [718, 299, 1945, 2543]},
+    {"file": "shakn.jpg",         "label": "shakn",         "roi": [320, 128, 1050, 998]}
   ]
 }

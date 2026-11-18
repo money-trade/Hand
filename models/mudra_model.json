@@ -1,6 +1,6 @@
 {
-  "version": "20261113_161225",
-  "model": "MLP 120-128-64-7",
+  "version": "20261118_150252",
+  "model": "MLP 120-128-64-25",
   "model_type": "nn",
   "classes": [
     "abhaya",
@@ -9,60 +9,78 @@
     "ksepana",
     "mudra_R",
     "namaskara_mudra",
-    "vitarka_mudra"
+    "vitarka_mudra",
+    "Bhudi",
+    "Bronchial",
+    "Dyani",
+    "Ganesh",
+    "Garuda",
+    "Hakini",
+    "Jnana",
+    "Kalesvera",
+    "Lotus",
+    "Pushan",
+    "Shivalinga",
+    "Ushas",
+    "Uttarabadhi",
+    "Vajra",
+    "Vajrapradama",
+    "Varuna",
+    "Vayu",
+    "shakn"
   ],
-  "n_samples": 2807,
+  "n_samples": 10013,
   "feature_dim": 2035,
   "pca_dim": 120,
   "split": {
-    "train": 1967,
-    "val": 420,
-    "test": 420
+    "train": 7016,
+    "val": 1499,
+    "test": 1498
   },
   "val": {
-    "accuracy": 0.9976190476190476,
-    "macro_f1": 0.9976188822636493
+    "accuracy": 0.9866577718478986,
+    "macro_f1": 0.986665372402994
   },
   "test": {
-    "accuracy": 1.0,
-    "macro_f1": 1.0
+    "accuracy": 0.9886515353805073,
+    "macro_f1": 0.988613807969098
   },
   "real_test": null,
   "robustness": {
-    "1.0": 0.9904761904761905,
-    "1.5": 0.9761904761904762,
-    "2.0": 0.8428571428571429
+    "1.0": 0.9853333333333333,
+    "1.5": 0.936,
+    "2.0": 0.7727272727272727
   },
   "open_set": {
-    "threshold": 1.635544269779239,
+    "threshold": 1.5094013974029195,
     "unknown_reject": {
-      "neck": 0.9333333333333333,
-      "partial": 0.85,
-      "blob": 0.6666666666666667,
-      "mix": 0.8333333333333334
+      "neck": 0.9833333333333333,
+      "partial": 0.9830508474576272,
+      "blob": 0.9833333333333333,
+      "mix": 1.0
     },
-    "validation_accept": 0.9523809523809523,
-    "test_accept": 0.9666666666666667
+    "validation_accept": 0.9172781854569713,
+    "test_accept": 0.9299065420560748
   },
   "candidates": [
     {
       "model": "kNN",
-      "val_acc": 0.9976190476190476,
-      "val_f1": 0.9976188822636493,
-      "train_seconds": 0.0008718967437744141
+      "val_acc": 0.9859906604402935,
+      "val_f1": 0.9859605860010913,
+      "train_seconds": 0.002480745315551758
     },
     {
       "model": "Softmax Regression",
-      "val_acc": 0.9952380952380953,
-      "val_f1": 0.9952367721192396,
-      "train_seconds": 1.2269649505615234
+      "val_acc": 0.9826551034022681,
+      "val_f1": 0.9826845410160577,
+      "train_seconds": 2.711362600326538
     },
     {
-      "model": "MLP 120-128-64-7",
-      "val_acc": 0.9976190476190476,
-      "val_f1": 0.9976188822636493,
-      "train_seconds": 1.8373997211456299
+      "model": "MLP 120-128-64-25",
+      "val_acc": 0.9866577718478986,
+      "val_f1": 0.986665372402994,
+      "train_seconds": 9.720246315002441
     }
   ],
-  "train_seconds": 109.9635181427002
+  "train_seconds": 338.4302463531494
 }

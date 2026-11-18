@@ -4,8 +4,9 @@ pipeline.py — รวมทุกขั้นตอนตอนใช้งา�
   เฟรมกล้อง + ROI -> ภาพทำงาน -> หามือ
      -> [ด่าน 1] ตรวจขนาดมือ (เล็กเกิน / สีผิวเต็มกรอบ)         ไม่ผ่าน = ไม่คำนวณต่อ
      -> สกัดฟีเจอร์ -> Standardize -> PCA
-     -> [ด่าน 2] Open-set: อยู่ในฐานข้อมูลหรือไม่ (novelty)    ไม่ผ่าน = ไม่ส่งให้โมเดลจำแนก
+     -> [ด่าน 2] Open-set: อาจอยู่ในฐานข้อมูลหรือไม่ (novelty)  ไม่ผ่าน = ไม่ส่งให้โมเดลจำแนก
      -> โมเดลจำแนก -> ความน่าจะเป็นของแต่ละปาง
+     -> [ด่าน 3] โมเดลมั่นใจ >= CONF_GATE หรือไม่               ไม่ผ่าน = ถือว่าไม่อยู่ในฐานข้อมูล (ไม่แสดง/ไม่บันทึก)
 
 ใช้ฟังก์ชันชุดเดียวกับตอนเทรน (dataset.prepare_source / make_working) เพื่อให้การเตรียมข้อมูลตรงกัน 100%
 """
@@ -14,7 +15,6 @@ import numpy as np
 from . import config
 from .dataset import make_working, prepare_source
 from .features import extract_features
-from .io_utils import detect_faces
 from .image_ops import rgb_to_gray
 from .models import KNNClassifier, NeuralNetClassifier
 from .novelty import NoveltyDetector
@@ -78,11 +78,11 @@ class MudraRecognizer:
             self.model = NeuralNetClassifier.from_params(params)
         nov = {k[4:]: v for k, v in d.items() if k.startswith("nov_")}
         self.novelty = NoveltyDetector.from_params(nov) if nov else None   # โมเดลเก่าไม่มีด่านนี้
-        self._tick, self._faces, self._face_age = 0, [], 0
         self._prev_gray = None
         self._track, self._lost = None, 0
-        self.require_motion = False     # True = จับเฉพาะสีผิวที่ขยับ/ติดตามอยู่ (ใช้กับกล้องสด)
-        self.ignore_faces = True        # ตัดใบหน้าออกก่อนหามือ
+        # True = จับเฉพาะสีผิวที่ขยับ/ติดตามอยู่ (ใช้กับกล้องสด) — ใบหน้า/คอที่นิ่งจึงไม่ถูกนับเป็นมือ
+        # (ใช้แทนตัวตรวจจับใบหน้าสำเร็จรูป เพื่อให้ทุกอย่างเขียนเองตามข้อกำหนดของโปรเจค)
+        self.require_motion = False
         self.sensitivity = 1.0          # ตัวคูณเกณฑ์: > 1 ยอมรับง่ายขึ้น, < 1 เข้มงวดขึ้น
         self.skin_model = skin_model or SkinModel.load(config.SKIN_FILE)
 
@@ -94,26 +94,19 @@ class MudraRecognizer:
     def predict_proba_features(self, F):
         return self.model.predict_proba(self.transform(F)[0])
 
-    def work_faces(self, frame_rgb, roi, work_shape):
-        """ตำแหน่งใบหน้าในพิกัดภาพทำงาน ที่จะมีตรวจทุก FACE_EVERY เฟรม และจำผลไว้ FACE_HOLD เฟรม เผื่อกันพลาดตอนหันหน้า"""
-        if not self.ignore_faces:
-            return []
-        self._tick += 1
-        if self._tick % config.FACE_EVERY == 1 or self._tick == 1:
-            try:
-                found = detect_faces(frame_rgb)
-            except Exception:
-                found = []
-            if found:
-                self._faces, self._face_age = found, 0
-            else:
-                self._face_age += config.FACE_EVERY
-        if self._face_age > config.FACE_HOLD:
-            self._faces = []
+    def reset_tracking(self):
+        """ล้างสถานะที่จำข้ามเฟรม (เฟรมก่อนหน้าสำหรับจับการเคลื่อนไหว + มือที่กำลังติดตาม)
+        ต้องเรียกเมื่อภาพถัดไปไม่ต่อเนื่องกับภาพก่อน เช่น ทำนายทีละไฟล์ หรือย้ายกรอบ ROI"""
+        self._prev_gray = None
+        self._track, self._lost = None, 0
+
+    @staticmethod
+    def faces_to_work(faces, roi, work_shape):
+        """แปลงกรอบใบหน้า (พิกัดเฟรม) เป็นพิกัดภาพทำงาน"""
         x1, y1, x2, y2 = roi
         sx, sy = work_shape[1] / max(1.0, x2 - x1), work_shape[0] / max(1.0, y2 - y1)
         return [((fx1 - x1) * sx, (fy1 - y1) * sy, (fx2 - x1) * sx, (fy2 - y1) * sy)
-                for fx1, fy1, fx2, fy2 in self._faces]
+                for fx1, fy1, fx2, fy2 in faces]
 
     def work_motion(self, work):
         """mask การเคลื่อนไหวบนภาพทำงาน (ต่างจากเฟรมก่อน) — ไม่มีเฟรมก่อน/ขนาดเปลี่ยน = None"""
@@ -124,15 +117,16 @@ class MudraRecognizer:
         m = np.abs(g - prev) > config.MOTION_DIFF
         return m if m.mean() < 0.5 else None            # กล้องสั่น/แสงเปลี่ยนทั้งภาพ = ไม่ใช้
 
-    def analyze(self, frame_rgb, roi):
+    def analyze(self, frame_rgb, roi, faces=None):
         """
         วิเคราะห์ 1 เฟรม  roi = (x1, y1, x2, y2) ในพิกัดของ frame_rgb
+        faces = (ไม่บังคับ) กรอบใบหน้าในพิกัดเฟรม ถ้าทราบ — สีผิวบริเวณนั้นจะถูกตัดออกก่อนหามือ
         คืน dict: status (no_hand | bad_geometry | unknown | known), reason, novelty,
                   probs/label/confidence (มีค่าเฉพาะ status = known), hand, work
         """
         small, roi_s = prepare_source(frame_rgb, roi)
         work = make_working(small, roi_s)
-        faces = self.work_faces(frame_rgb, roi, work.shape)             # ตัดใบหน้า โฟกัสแค่มือ
+        faces = self.faces_to_work(faces, roi, work.shape) if faces else None
         motion = self.work_motion(work)
         hand = extract_hand(work, self.skin_model, faces=faces, motion=motion,
                             require_motion=self.require_motion, track=self._track)
@@ -163,5 +157,9 @@ class MudraRecognizer:
 
         probs = self.model.predict_proba(Z)[0]                          # จำแนกปาง
         i = int(probs.argmax())
+        if probs[i] < config.CONF_GATE:                                 # ด่าน 3: โมเดลไม่มั่นใจ
+            out.update(status=UNKNOWN, confidence=float(probs[i]),
+                       reason="ท่ามือคล้ายหลายปางแต่ไม่ตรงปางใดชัดเจน — อาจไม่อยู่ในฐานข้อมูล")
+            return out                                                  # ไม่แสดง/ไม่บันทึกผล
         out.update(status=KNOWN, probs=probs, label=self.class_names[i], confidence=float(probs[i]))
         return out

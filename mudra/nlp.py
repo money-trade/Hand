@@ -195,6 +195,13 @@ class ThaiTextGenerator:
     def short(self, label):
         return self.info.get(label, {}).get("short_th", label)
 
+    def supported_summary(self, examples=6):
+        """ข้อความสั้น ๆ บอกจำนวนท่าที่รองรับ + ตัวอย่าง (รายชื่อเต็มยาวเกินจะแสดงบนหน้าจอ)"""
+        names = [self.short(k) for k in self.info]
+        if len(names) <= examples:
+            return "ท่าที่รองรับ: " + " • ".join(names)
+        return f"รองรับ {len(names)} ท่า เช่น " + " • ".join(names[:examples]) + " ฯลฯ"
+
     def describe(self, label, confidence, runner_up=None, state="ok", reason=""):
         """
         คืน dict ข้อความสำหรับแสดงผล
@@ -212,7 +219,7 @@ class ThaiTextGenerator:
         if state == "unknown":
             return {"title": "ไม่พบท่านี้ในฐานข้อมูล", "subtitle": "ไม่นำไปคำนวณ — รอท่าที่รู้จัก",
                     "sentence": "พบมือ แต่ท่ามือไม่ตรงกับปางใดในฐานข้อมูล ระบบจะรอจนกว่าจะพบท่าที่อาจอยู่ในฐานข้อมูล",
-                    "hand": "ท่าที่รองรับ: " + " • ".join(self.short(k) for k in self.info),
+                    "hand": self.supported_summary(),
                     "meaning": "ถ้าเป็นท่าในฐานข้อมูลแต่ถูกปฏิเสธ: เลื่อนแถบ \"เกณฑ์ยอมรับ\" ให้ผ่อนปรนขึ้น "
                                "หรือเก็บตัวอย่างท่านั้นจากกล้องแล้วกด \"ฝึกโมเดลใหม่\""}
         d = self.info.get(label, {})
@@ -235,13 +242,18 @@ class ThaiTextGenerator:
         label, conf, ts = token
         return f"[{time.strftime('%H:%M:%S', time.localtime(ts))}] {self.name(label)} ({conf * 100:.0f}%)"
 
-    def summarize(self, labels):
-        """สรุปลำดับท่าทั้งหมดเป็นประโยคภาษาไทย"""
+    def summarize(self, labels, max_items=None):
+        """
+        สรุปลำดับท่าทั้งหมดเป็นประโยคภาษาไทย
+        max_items: ถ้าระบุและมีท่ามากกว่านี้ จะแสดงเฉพาะท่าล่าสุด (สำหรับป้ายบนหน้าจอที่มีที่จำกัด)
+        """
         labels = [l for l in labels if l != NONE_TOKEN]
         if not labels:
             return "ยังไม่มีท่าที่ตรวจพบ"
-        seq = " → ".join(self.short(l) for l in labels)
         uniq = len(set(labels))
         if len(labels) == 1:
             return f"ตรวจพบ 1 ท่า คือ {self.name(labels[0])}"
-        return f"ตรวจพบทั้งหมด {len(labels)} ท่า ({uniq} ปางที่ไม่ซ้ำกัน) ตามลำดับ: {seq}"
+        head = f"ตรวจพบทั้งหมด {len(labels)} ท่า ({uniq} ปางที่ไม่ซ้ำกัน)"
+        if max_items and len(labels) > max_items:
+            return head + " ล่าสุด: … → " + " → ".join(self.short(l) for l in labels[-max_items:])
+        return head + " ตามลำดับ: " + " → ".join(self.short(l) for l in labels)

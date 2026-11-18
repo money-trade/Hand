@@ -14,10 +14,39 @@ import numpy as np
 
 from . import config
 from .features import extract_features
-from .image_ops import (box_blur, downscale_area, roi_working_shape, to_uint8,
-                        warp_roi)
+from .image_ops import (box_blur, closing, connected_components, dilate, downscale_area,
+                        opening, roi_working_shape, to_uint8, warp_roi)
 from .io_utils import read_image_rgb
-from .segmentation import extract_hand
+from .segmentation import SkinModel, extract_hand
+
+
+def isolate_hand(img, roi, skin, work_side=480):
+    """
+    Data cleaning สำหรับภาพที่เสื้อ/ฉากหลังมีสีคล้ายผิว (เช่น เสื้อสีครีม เพดานสีเบจ)
+      1. หามือในกรอบ ROI ด้วย "ช่วงสีผิวเฉพาะภาพนี้" ที่เข้มงวดกว่าค่าเริ่มต้น (ระบุใน annotations.json)
+      2. ทาสีเทากลางทุกพิกเซลที่ไม่ใช่มือ
+    ทำครั้งเดียวตอนโหลด ก่อน augmentation — การบิดสีภายหลังจึงดึงฉากหลังกลับมาเป็น "ผิว" ไม่ได้
+    """
+    h, w = img.shape[:2]
+    f = max(1, int(max(h, w) // work_side))
+    small = downscale_area(img, f)
+    sm = SkinModel(cr=skin.get("cr", config.SKIN_CR), cb=skin.get("cb", config.SKIN_CB),
+                   y_min=skin.get("y_min", config.SKIN_Y_MIN))
+    m = closing(opening(sm.mask(box_blur(small, 1)), 1), 2)
+    x1, y1, x2, y2 = [int(round(v / f)) for v in roi]
+    inside = np.zeros_like(m)
+    inside[max(0, y1):y2, max(0, x1):x2] = True
+    labels, n, areas = connected_components(m & inside)
+    if n == 0:
+        return img
+    keep = [i + 1 for i in range(n) if areas[i] >= 0.05 * areas.max()]
+    hand = dilate(np.isin(labels, keep), max(1, int(0.006 * max(small.shape[:2]))))
+    full = np.zeros((h, w), bool)
+    mh, mw = hand.shape
+    full[:mh * f, :mw * f] = hand.repeat(f, 0).repeat(f, 1)
+    out = img.copy()
+    out[~full] = 127
+    return out
 
 
 @dataclass
@@ -27,6 +56,7 @@ class SourceImage:
     roi: tuple
     kind: str                  # "raw" | "collected"
     exclude: tuple = ()        # กรอบที่ต้องลบทิ้ง (เช่น คอ/คาง ที่ติดกับนิ้ว) — Data cleaning
+    skin: dict = None          # ช่วงสีผิวเฉพาะภาพ -> ทาสีเทาทุกอย่างที่ไม่ใช่มือ (isolate_hand)
     image: np.ndarray = None   # RGB uint8 (โหลดภายหลัง)
 
     def load(self):
@@ -34,6 +64,8 @@ class SourceImage:
             img = read_image_rgb(self.path)
             for x1, y1, x2, y2 in self.exclude:
                 img[int(y1):int(y2), int(x1):int(x2)] = 127      # ทาสีเทากลาง = ไม่ใช่สีผิว
+            if self.skin and self.roi is not None:
+                img = isolate_hand(img, self.roi, self.skin)
             self.image = img
             if self.roi is None:
                 h, w = self.image.shape[:2]
@@ -60,7 +92,8 @@ def load_sources(include_collected=True):
         p = config.RAW_DIR / it["file"]
         if p.exists():
             sources.append(SourceImage(p, it["label"], tuple(it["roi"]), "raw",
-                                       tuple(tuple(b) for b in it.get("exclude", []))))
+                                       tuple(tuple(b) for b in it.get("exclude", [])),
+                                       it.get("skin")))
             annotated.add(p.name)
     if config.RAW_DIR.exists():
         for p in sorted(config.RAW_DIR.iterdir()):

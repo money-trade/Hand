@@ -12,7 +12,7 @@ import sys
 from pathlib import Path
 
 from mudra import config
-from mudra.dataset import load_mudra_info
+from mudra.dataset import isolate_hand, load_mudra_info
 from mudra.io_utils import read_image_rgb
 from mudra.nlp import ThaiTextGenerator
 from mudra.pipeline import MudraRecognizer
@@ -40,12 +40,15 @@ def main():
         h, w = img.shape[:2]
         if a.roi:
             roi = tuple(a.roi)
-        elif p.name in ann:
+        elif p.name in ann:                       # ภาพใน Raw Data: ใช้ ROI + data cleaning ชุดเดียวกับตอนเทรน
             roi = tuple(ann[p.name]["roi"])
             for x1, y1, x2, y2 in ann[p.name].get("exclude", []):
                 img[int(y1):int(y2), int(x1):int(x2)] = 127
+            if ann[p.name].get("skin"):
+                img = isolate_hand(img, roi, ann[p.name]["skin"])
         else:
             roi = (0, 0, w, h)
+        rec.reset_tracking()                      # แต่ละไฟล์เป็นภาพอิสระ ไม่ใช่เฟรมต่อเนื่อง
         res = rec.analyze(img, roi)
         print(f"\n{p.name}")
         if res["novelty"] is not None:

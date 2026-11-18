@@ -207,13 +207,17 @@ def run_training(aug_raw=config.AUG_PER_RAW_IMAGE, aug_collected=config.AUG_PER_
     Xh, _ = aug_features(raw_sources, skin, config.NOVELTY_CAL_STRENGTH, 30, seed + 2000)
     Zh, Eh = project(Xh)
     novelty.calibrate(np.concatenate([Zva, Zh]), np.concatenate([Eva, Eh]))
-    log(f"  เกณฑ์ sqrt(d x r) <= {novelty.thr_:.3f}  (k={novelty.k}, ตัวอย่างอ้างอิง {len(novelty.refs_)})")
+    log(f"  เกณฑ์ d <= {novelty.thr_:.3f}  (k={novelty.k}, ตัวอย่างอ้างอิง {len(novelty.refs_)}), "
+        f"ความมั่นใจของโมเดล >= {config.CONF_GATE}")
+
+    def passes(Z, E):
+        """ผ่านทั้งด่าน 2 (ระยะถึงฐานข้อมูล ก่อนจำแนก) และด่าน 3 (โมเดลมั่นใจพอ) — เหมือน pipeline.analyze"""
+        return novelty.is_known(Z, E) & (best.predict_proba(Z).max(axis=1) >= config.CONF_GATE)
 
     def accept_rate(Xf):
         if len(Xf) == 0:
             return float("nan")
-        Z, E = project(Xf)
-        return float(novelty.is_known(Z, E).mean())
+        return float(passes(*project(Xf)).mean())
 
     unknown = make_unknown_features(sources, skin, n_per_type=60, seed=seed + 3000)
     names = {"neck": "คอ/คาง (ใบหน้าเข้ามาในกรอบ)", "partial": "เห็นมือไม่ครบ / ข้อมือ / แขน",
@@ -231,14 +235,15 @@ def run_training(aug_raw=config.AUG_PER_RAW_IMAGE, aug_collected=config.AUG_PER_
         rows.append(f"| {names[k]} | ไม่อยู่ในฐานข้อมูล | {len(Xf)} | {r * 100:.1f}% | **{(1 - r) * 100:.1f}%** |")
         log(f"  {k:10s} (ไม่รู้จัก) ปฏิเสธ {(1 - r) * 100:5.1f}%")
     report.append(
-        "โมเดล softmax ต้องเลือก 1 ใน 7 ปางเสมอ จึงเพิ่มด่านตรวจ **ก่อน** ส่งให้โมเดลจำแนก "
-        "ภาพที่ไม่ผ่านจะไม่ถูกนำไปคำนวณ\n\n"
-        "- `d` = ระยะ kNN (k=5) ถึงกลุ่มของปางที่ใกล้ที่สุด ÷ ระยะปกติของปางนั้น (ในปริภูมิ PCA)\n"
-        "- `r` = reconstruction error ของ PCA ÷ ค่าปกติ\n"
-        f"- คะแนน = √(d·r) ÷ T, เกณฑ์ T = เปอร์เซ็นไทล์ที่ {config.NOVELTY_PERCENTILE:g} ของภาพที่รู้จัก "
-        f"(validation + ภาพบิดแรง ×{config.NOVELTY_CAL_STRENGTH}) = {novelty.thr_:.3f}\n"
+        f"โมเดล softmax ต้องเลือก 1 ใน {nc} ปางเสมอ จึงมีด่านตรวจ 2 ชั้น ภาพที่ไม่ผ่านจะไม่ถูกแสดงหรือบันทึกเป็นข้อความ\n\n"
+        "- **ด่าน 2 (ก่อนโมเดลจำแนก):** `d` = ระยะ kNN (k=5) ถึงกลุ่มของปางที่ใกล้ที่สุด ÷ ระยะปกติของปางนั้น "
+        f"(ในปริภูมิ PCA) ต้อง ≤ T โดย T = เปอร์เซ็นไทล์ที่ {config.NOVELTY_PERCENTILE:g} ของภาพที่รู้จัก "
+        f"(validation + ภาพบิดแรง ×{config.NOVELTY_CAL_STRENGTH}) = {novelty.thr_:.3f} — ไม่ผ่าน = ไม่ส่งให้โมเดลจำแนกเลย\n"
+        f"- **ด่าน 3 (หลังโมเดลจำแนก):** ความมั่นใจสูงสุดของโมเดลต้อง ≥ {config.CONF_GATE} — ไม่ผ่าน = ถือว่าไม่อยู่ในฐานข้อมูล\n"
         "- ตั้งเกณฑ์จากภาพที่รู้จักเท่านั้น — ภาพ unknown ด้านล่างใช้ทดสอบอย่างเดียว\n"
-        "- เฟรมเดี่ยวที่ถูกปฏิเสธผิดจะถูก HMM กลบ ต้องถูกปฏิเสธต่อเนื่องจึงจะแสดงว่า \"ไม่พบในฐานข้อมูล\"\n\n"
+        "- เฟรมเดี่ยวที่ถูกปฏิเสธผิดจะถูก HMM กลบ ต้องถูกปฏิเสธต่อเนื่องจึงจะแสดงว่า \"ไม่พบในฐานข้อมูล\"\n"
+        "- เมื่อเพิ่มเป็น 25 ปาง วัด AUROC แล้ว `d` อย่างเดียวแยกท่าที่ไม่รู้จักได้ดีกว่า √(d·r) ที่ใช้ตอนมี 7 ปาง "
+        "และการเพิ่มด่าน 3 ทำให้ปฏิเสธท่าที่ไม่รู้จักได้ ~92–95% ที่อัตรายอมรับท่าที่รู้จักใกล้เดิม\n\n"
         + "\n".join(rows))
 
     # ------------------------------------------------------------------ 11
@@ -280,7 +285,7 @@ def run_training(aug_raw=config.AUG_PER_RAW_IMAGE, aug_collected=config.AUG_PER_
         Zr, Er = project(Xr)
         P = best.predict_proba(Zr)
         acc = float(np.mean(P.argmax(1) == np.array([class_names.index(l) for l in yr])))
-        acc_known = float(novelty.is_known(Zr, Er).mean())
+        acc_known = float(passes(Zr, Er).mean())
         robustness[str(strength)] = acc
         log(f"  robustness x{strength}: acc {acc * 100:.1f}%  (mean conf {P.max(1).mean():.2f}, "
             f"ผ่านด่าน open-set {acc_known * 100:.1f}%)")
