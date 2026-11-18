@@ -188,7 +188,7 @@ def extract_hand(work_rgb, skin_model, crop_size=config.CROP_SIZE,
     if n == 0:
         return HandResult(False, mask=mask)
 
-    # เก็บเฉพาะกลุ่มใหญ่ (มือ/แขน) สูงสุด 3 กลุ่ม — ตัดสิ่งรบกวนสีคล้ายผิว
+    # เก็บเฉพาะกลุ่มใหญ่ (มือ/แขน) สูงสุด 3 กลุ่ม — ตัดสิ่งรบกวนที่มีสีคล้ายผิว
     # ถ้ามี motion mask (ภาพทำงานขนาดเดียวกัน) ให้กลุ่มที่เคลื่อนไหวได้คะแนนสูงขึ้น — มือมักขยับ ส่วนฉากหลังนิ่ง
     score = areas.astype(np.float32)
     mov = np.zeros(len(areas), np.float32)
@@ -229,7 +229,7 @@ def extract_hand(work_rgb, skin_model, crop_size=config.CROP_SIZE,
     gray = rgb_to_gray(work_rgb) / 255.0
     crop_gray = sample_bilinear(gray, gx, gy, fill=0.0)
 
-    # ปรับความสว่างภายในมือให้อยู่ช่วง 0..1 (ลดผลจากแสงต่างกัน) แล้วลบพื้นหลังทิ้ง
+    # ปรับความสว่างภายในมือให้อยู่ช่วง 0..1 ทำให้ลดผลจากแสงต่างกัน แล้วลบพื้นหลังทิ้ง
     m = crop_mask > 0.5
     if m.sum() > 10:
         vals = crop_gray[m]
