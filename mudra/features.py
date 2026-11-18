@@ -112,7 +112,7 @@ def shape_descriptors(hand):
     area = float(hand.mask[y1:y2, x1:x2].sum())
     fill = area / (bw * bh)
 
-    # ทิศทางแกนหลัก + ความรี (จาก second-order central moments)
+    # ทิศทางแกนหลัก + ความรี จาก second-order central moments
     res = _central_moments(hand.crop_mask > 0.5)
     orient_c, orient_s, ecc = 0.0, 0.0, 0.0
     if res is not None:
